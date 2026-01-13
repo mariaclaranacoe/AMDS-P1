@@ -1,0 +1,12 @@
+msg.payload = {
+    s1: Number(msg.payload.s1),
+    s2: Number(msg.payload.s2),
+    s3: Number(msg.payload.s3),
+    s4: Number(msg.payload.s4),
+    s5: Number(msg.payload.s5),
+    s6: Number(msg.payload.s6),
+    detection_count: Number(msg.payload.detection_count),
+    datetime: msg.payload["date & time"]
+};
+msg.measurement = "mosquito_sensors";
+return msg;

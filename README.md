@@ -1,2 +1,4 @@
 # AMDS-P1
-THESIS 2026: "LLM-Based AI Agent for IoT-Enabled Mosquito Density and Gender Monitoring" is an automated monitoring system designed to detect and track mosquito activity.
+This repository contains the complete codebase, configurations, and documentation for the proponents' thesis: "LLM-Based AI Agent for an IoT-Enabled Mosquito Density and Gender Monitoring System."
+
+

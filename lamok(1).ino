@@ -13,9 +13,8 @@ const int mqtt_port = 1883;
 const char* mqtt_user = "teasis";
 const char* mqtt_password = "teasis";
 
-// MQTT Topics - SEPARATE TOPICS
-const char* topic_sensors = "/mosquito/sensors";      // Individual sensor data
-const char* topic_count = "/mosquito/total_count";    // Total mosquito count only
+// MQTT Topics - SINGLE TOPIC NOW
+const char* topic_data = "/mosquito/data";  // Single topic for all data
 
 // Sensor pins
 const int sensorPins[6] = {34, 35, 32, 33, 25, 26};
@@ -34,7 +33,7 @@ PubSubClient client(espClient);
 
 // Variables for timing
 unsigned long lastSensorMsg = 0;
-const long sensorPublishInterval = 1000;    // Sensor data every 1 second on detection
+const long sensorPublishInterval = 1000;    // Data every 1 second on detection
 unsigned long lastRead = 0;
 const long readInterval = 50;
 bool timeSynced = false;
@@ -96,9 +95,8 @@ void setup() {
   Serial.println("\n=== IR BREAK-BEAM SENSOR ===");
   Serial.println("Circuit: Photodiode cathode->3.3V, anode->pin->10k->GND");
   Serial.println("Logic: HIGH=Light detected, LOW=No light");
-  Serial.println("MQTT Topics:");
-  Serial.println("  /mosquito/sensors - Individual sensor data (on detection)");
-  Serial.println("  /mosquito/total_count - Total count (ONLY on detection)");
+  Serial.println("MQTT Topic:");
+  Serial.println("  /mosquito/data - All data in one message");
   
   // Initialize all pins as digital inputs WITHOUT PULLUP
   for (int i = 0; i < 6; i++) {
@@ -134,7 +132,7 @@ void setup() {
     if (getLocalTime(&timeinfo)) {
       timeSynced = true;
       char datetime[20];
-      strftime(datetime, sizeof(datetime), "%Y-%m-d %H:%M:%S", &timeinfo);
+      strftime(datetime, sizeof(datetime), "%Y-%m-%d %H:%M:%S", &timeinfo);
       Serial.print("Time synced: ");
       Serial.println(datetime);
       break;
@@ -206,42 +204,26 @@ void displayStatus() {
   }
 }
 
-void publishSensorData() {
-  if (anyDetection) {
-    StaticJsonDocument<256> jsonDoc;
-    
-    // Send sensor states
-    jsonDoc["s1"] = digitalRead(sensorPins[0]);
-    jsonDoc["s2"] = digitalRead(sensorPins[1]);
-    jsonDoc["s3"] = digitalRead(sensorPins[2]);
-    jsonDoc["s4"] = digitalRead(sensorPins[3]);
-    jsonDoc["s5"] = digitalRead(sensorPins[4]);
-    jsonDoc["s6"] = digitalRead(sensorPins[5]);
-    jsonDoc["detection_count"] = detectionCount;
-    jsonDoc["date & time"] = getDateTime();
-    
-    char jsonBuffer[256];
-    serializeJson(jsonDoc, jsonBuffer);
-    
-    if (client.publish(topic_sensors, jsonBuffer)) {
-      Serial.print("MQTT Sensors Published: ");
-      Serial.println(jsonBuffer);
-    }
-  }
-}
-
-void publishTotalCount() {
-  StaticJsonDocument<128> jsonDoc;
+void publishAllData() {
+  StaticJsonDocument<256> jsonDoc;
   
-  // Send ONLY total count with timestamp
-  jsonDoc["total_mosquito_count"] = detectionCount;
+  // Sensor states (1=beam intact, 0=beam broken)
+  jsonDoc["s1"] = digitalRead(sensorPins[0]);
+  jsonDoc["s2"] = digitalRead(sensorPins[1]);
+  jsonDoc["s3"] = digitalRead(sensorPins[2]);
+  jsonDoc["s4"] = digitalRead(sensorPins[3]);
+  jsonDoc["s5"] = digitalRead(sensorPins[4]);
+  jsonDoc["s6"] = digitalRead(sensorPins[5]);
+  jsonDoc["detection_count"] = detectionCount;
+  jsonDoc["total_count"] = detectionCount;  // Same value, for compatibility
   jsonDoc["datetime"] = getDateTime();
   
-  char jsonBuffer[128];
+  char jsonBuffer[256];
   serializeJson(jsonDoc, jsonBuffer);
   
-  if (client.publish(topic_count, jsonBuffer)) {
-    Serial.print("MQTT Total Count Published: ");
+  // Publish to SINGLE topic only
+  if (client.publish(topic_data, jsonBuffer)) {
+    Serial.print("MQTT Published to /mosquito/data: ");
     Serial.println(jsonBuffer);
   }
 }
@@ -260,13 +242,12 @@ void loop() {
     lastRead = now;
   }
   
-  // Publish BOTH sensor data AND total count ONLY when detection occurs
+  // Publish ALL data when detection occurs
   if (anyDetection) {
     displayStatus();
     
     if (now - lastSensorMsg >= sensorPublishInterval) {
-      publishSensorData();    // Publish sensor data
-      publishTotalCount();    // ALSO publish total count
+      publishAllData();    // Send everything in one message
       lastSensorMsg = now;
     }
   }

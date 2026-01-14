@@ -1,0 +1,23 @@
+// Function for ANALOG sensor data (0-4095)
+var sensorMsg = {payload: {}, measurement: ""};
+var countMsg = {payload: {}, measurement: ""};
+
+// Analog sensor values (0-4095)
+sensorMsg.payload = {
+    s1: Number(msg.payload.s1),
+    s2: Number(msg.payload.s2),
+    s3: Number(msg.payload.s3),
+    s4: Number(msg.payload.s4),
+    threshold: Number(msg.payload.threshold || 0),
+    time: msg.payload.time
+};
+sensorMsg.measurement = "mosquito_sensors";
+
+// Count data
+countMsg.payload = {
+    total_count: Number(msg.payload.count),
+    time: msg.payload.time
+};
+countMsg.measurement = "mosquito_count";
+
+return [sensorMsg, countMsg];

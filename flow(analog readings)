@@ -1,20 +1,20 @@
-// CORRECT function node for your NEW ESP32 code
 var sensorMsg = {payload: {}, measurement: ""};
 var countMsg = {payload: {}, measurement: ""};
 
-// Sensor data - NO threshold field anymore!
+// Sensor data
 sensorMsg.payload = {
     s1: Number(msg.payload.s1),
     s2: Number(msg.payload.s2),
     s3: Number(msg.payload.s3),
     s4: Number(msg.payload.s4),
-    datetime: msg.payload.datetime  // Changed from 'time' to 'datetime'
+    s5: Number(msg.payload.s5),
+    s6: Number(msg.payload.s6),
+    datetime: msg.payload.datetime  
 };
 sensorMsg.measurement = "mosquito_sensors";
 
-// Count data - field is 'count' not 'total_count'
 countMsg.payload = {
-    total_count: Number(msg.payload.count),  // Changed from 'count' to 'total_count'
+    total_count: Number(msg.payload.count),  
     datetime: msg.payload.datetime
 };
 countMsg.measurement = "mosquito_count";

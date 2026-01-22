@@ -6,21 +6,22 @@
 // WiFi and MQTT settings
 const char* ssid = "SBG6700AC-69159";
 const char* password = "fb13122db2";
-const char* mqtt_server = "192.168.0.22";
+const char* mqtt_server = "192.168.0.71";
 const int mqtt_port = 1883;
 const char* mqtt_user = "teasis";
 const char* mqtt_password = "teasis";
 const char* topic_data = "/mosquito/data";
 
-// Sensor pins (4 sensors)
-const int sensorPins[4] = {34, 35, 32, 33};
-int baseline[4] = {0};
-int prevAnalog[4] = {0};
+// Sensor pins (6 sensors: S1-S6)
+const int NUM_SENSORS = 6;
+const int sensorPins[NUM_SENSORS] = {36, 39, 34, 35, 32, 33};
+int baseline[NUM_SENSORS] = {0};
+int prevAnalog[NUM_SENSORS] = {0};
 int detectionCount = 0;
 bool anyDetection = false;
 
 // Detection settings
-const float REDUCTION_PERCENT = 15.0;
+const float REDUCTION_PERCENT = 5.0;
 
 // NTP
 const long gmtOffset_sec = 8 * 3600;
@@ -71,7 +72,7 @@ void calibrateSensors() {
   Serial.println("\n=== CALIBRATING ===");
   Serial.println("Make sure beams are CLEAR...");
   
-  for (int i = 0; i < 4; i++) {
+  for (int i = 0; i < NUM_SENSORS; i++) {
     int sum = 0;
     for (int j = 0; j < 20; j++) {  // 20 readings
       sum += analogRead(sensorPins[i]);
@@ -81,7 +82,9 @@ void calibrateSensors() {
     
     Serial.print("Sensor ");
     Serial.print(i+1);
-    Serial.print(" baseline: ");
+    Serial.print(" (PIN ");
+    Serial.print(sensorPins[i]);
+    Serial.print(") baseline: ");
     Serial.println(baseline[i]);
   }
   Serial.println("=== CALIBRATION DONE ===");
@@ -92,13 +95,21 @@ void setup() {
   delay(1000);
   
   Serial.println("\n=== MOSQUITO SENSOR ===");
-  Serial.println("S1(34) S2(35) S3(32) S4(33)");
+  Serial.println("6 SENSORS CONFIGURATION:");
+  for (int i = 0; i < NUM_SENSORS; i++) {
+    Serial.print("S");
+    Serial.print(i+1);
+    Serial.print("(PIN ");
+    Serial.print(sensorPins[i]);
+    Serial.print(") ");
+  }
+  Serial.println();
   Serial.print("Detection: ");
   Serial.print(REDUCTION_PERCENT);
   Serial.println("% light reduction");
   Serial.println("======================================");
   
-  for (int i = 0; i < 4; i++) {
+  for (int i = 0; i < NUM_SENSORS; i++) {
     pinMode(sensorPins[i], INPUT);
     prevAnalog[i] = analogRead(sensorPins[i]);
   }
@@ -122,7 +133,7 @@ void setup() {
 void readSensors() {
   anyDetection = false;
   
-  for (int i = 0; i < 4; i++) {
+  for (int i = 0; i < NUM_SENSORS; i++) {
     int current = analogRead(sensorPins[i]);
     
     // Calculate percentage reduction
@@ -135,7 +146,9 @@ void readSensors() {
       
       Serial.print(">>> MOSQUITO! Sensor ");
       Serial.print(i+1);
-      Serial.print(" at ");
+      Serial.print(" (PIN ");
+      Serial.print(sensorPins[i]);
+      Serial.print(") at ");
       Serial.print(getDateTime());
       Serial.print(" | Reduction: ");
       Serial.print(reduction, 1);
@@ -154,17 +167,19 @@ void readSensors() {
 }
 
 void publishData() {
-  StaticJsonDocument<256> jsonDoc;
+  StaticJsonDocument<384> jsonDoc;  // Slightly larger for 6 sensors
   
-  // ONLY THESE 3 THINGS:
-  jsonDoc["s1"] = analogRead(sensorPins[0]);
-  jsonDoc["s2"] = analogRead(sensorPins[1]);
-  jsonDoc["s3"] = analogRead(sensorPins[2]);
-  jsonDoc["s4"] = analogRead(sensorPins[3]);
+  // All 6 sensor values
+  jsonDoc["s1"] = analogRead(sensorPins[0]);  // PIN 36
+  jsonDoc["s2"] = analogRead(sensorPins[1]);  // PIN 39
+  jsonDoc["s3"] = analogRead(sensorPins[2]);  // PIN 34
+  jsonDoc["s4"] = analogRead(sensorPins[3]);  // PIN 35
+  jsonDoc["s5"] = analogRead(sensorPins[4]);  // PIN 32
+  jsonDoc["s6"] = analogRead(sensorPins[5]);  // PIN 33
   jsonDoc["count"] = detectionCount;
   jsonDoc["datetime"] = getDateTime();  // Full datetime
   
-  char buffer[256];
+  char buffer[384];
   serializeJson(jsonDoc, buffer);
   
   if (client.publish(topic_data, buffer)) {
@@ -189,7 +204,7 @@ void loop() {
     Serial.print(getDateTime());
     Serial.print("] ");
     
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < NUM_SENSORS; i++) {
       int val = analogRead(sensorPins[i]);
       int threshold = baseline[i] * (100.0 - REDUCTION_PERCENT) / 100.0;
       
@@ -206,7 +221,7 @@ void loop() {
         Serial.print("-");
       }
       
-      if (i < 3) Serial.print(" ");
+      if (i < NUM_SENSORS - 1) Serial.print(" ");
     }
     
     Serial.print(" | Count: ");

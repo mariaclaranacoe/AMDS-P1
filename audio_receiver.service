@@ -1,0 +1,15 @@
+[Unit]
+Description=Mosquito Audio Receiver Service
+After=network.target
+
+[Service]
+Type=simple
+User=teasis
+Group=teasis
+WorkingDirectory=/home/teasis/mosquito_listener
+ExecStart=/home/teasis/mosquito_listener/mosquito_ai/bin/python /home/teasis/mosquito_listener/audio_receiver.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

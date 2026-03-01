@@ -1,0 +1,110 @@
+============================================================
+MAPPING CLASS NUMBERS TO SPECIES/SEX
+============================================================
+Loading model: cnn_model_min_val_round9.h5
+Found 1323 audio files
+
+⚠ Couldn't parse: Ae.Aegypti_1M _21D_25C_SmallCylinder_cut23_16bit.wav
+Processed 50 files...
+Processed 100 files...
+Processed 150 files...
+Processed 200 files...
+Processed 250 files...
+Processed 300 files...
+Processed 350 files...
+Processed 400 files...
+Processed 450 files...
+Processed 500 files...
+Processed 550 files...
+Processed 600 files...
+Processed 650 files...
+Processed 700 files...
+Processed 750 files...
+Processed 800 files...
+Processed 850 files...
+Processed 900 files...
+Processed 950 files...
+Processed 1000 files...
+Processed 1050 files...
+Processed 1100 files...
+Processed 1150 files...
+Processed 1200 files...
+Processed 1250 files...
+
+============================================================
+CLASS MAPPING RESULTS
+============================================================
+Total files parsed: 1279
+Total files processed: 1279
+
+
+Class 0:
+  → Cu. quinquefasciatus_FEMALE:  41 files (conf: 0.831) ████████████████
+  → Cu. quinquefasciatus_MALE:   8 files (conf: 0.831) ████████████████
+  → An. dirus_FEMALE:   1 files (conf: 0.428) ████████
+  → Ae. albopictus_FEMALE:   1 files (conf: 0.410) ████████
+  → Ae. aegypti_FEMALE:   7 files (conf: 0.558) ███████████
+
+Class 1:
+  → An. dirus_FEMALE:  61 files (conf: 0.779) ███████████████
+  → Ae. aegypti_MALE:  93 files (conf: 0.821) ████████████████
+  → Ae. aegypti_FEMALE:  81 files (conf: 0.806) ████████████████
+  → Ae. albopictus_FEMALE:  40 files (conf: 0.761) ███████████████
+  → Cu. quinquefasciatus_MALE:  30 files (conf: 0.777) ███████████████
+  → Ae. albopictus_MALE: 150 files (conf: 0.856) █████████████████
+  → An. dirus_MALE:  45 files (conf: 0.663) █████████████
+  → Cu. quinquefasciatus_FEMALE:  26 files (conf: 0.725) ██████████████
+
+Class 2:
+  → Ae. aegypti_FEMALE:  24 files (conf: 0.859) █████████████████
+  → Cu. quinquefasciatus_FEMALE:   8 files (conf: 0.830) ████████████████
+  → Cu. quinquefasciatus_MALE:   2 files (conf: 0.796) ███████████████
+  → Ae. albopictus_FEMALE:   1 files (conf: 0.645) ████████████
+
+Class 3:
+  → An. dirus_MALE:  60 files (conf: 0.791) ███████████████
+  → Cu. quinquefasciatus_MALE:  30 files (conf: 0.814) ████████████████
+  → Ae. albopictus_FEMALE:  86 files (conf: 0.794) ███████████████
+  → Ae. aegypti_MALE:  40 files (conf: 0.810) ████████████████
+  → Ae. albopictus_MALE:  37 files (conf: 0.821) ████████████████
+  → Ae. aegypti_FEMALE:  45 files (conf: 0.803) ████████████████
+  → Cu. quinquefasciatus_FEMALE:  28 files (conf: 0.733) ██████████████
+  → An. dirus_FEMALE:  35 files (conf: 0.844) ████████████████
+
+Class 4:
+  → An. dirus_MALE:  55 files (conf: 0.921) ██████████████████
+  → Ae. albopictus_FEMALE:  23 files (conf: 0.709) ██████████████
+  → Ae. aegypti_MALE:  11 files (conf: 0.863) █████████████████
+  → Ae. albopictus_MALE:   4 files (conf: 0.772) ███████████████
+  → Ae. aegypti_FEMALE:   3 files (conf: 0.589) ███████████
+  → Cu. quinquefasciatus_MALE:  13 files (conf: 0.891) █████████████████
+  → An. dirus_FEMALE:   5 files (conf: 0.761) ███████████████
+  → Cu. quinquefasciatus_FEMALE:   2 files (conf: 0.353) ███████
+
+Class 5:
+  → Ae. albopictus_MALE:  13 files (conf: 0.680) █████████████
+  → Ae. aegypti_FEMALE:   6 files (conf: 0.555) ███████████
+  → Cu. quinquefasciatus_MALE:  17 files (conf: 0.703) ██████████████
+  → Ae. aegypti_MALE:   2 files (conf: 0.653) █████████████
+  → Ae. albopictus_FEMALE:   3 files (conf: 0.464) █████████
+  → An. dirus_MALE:   6 files (conf: 0.716) ██████████████
+  → Cu. quinquefasciatus_FEMALE:  11 files (conf: 0.723) ██████████████
+  → An. dirus_FEMALE:   2 files (conf: 0.355) ███████
+
+Class 6:
+  → An. dirus_FEMALE:  34 files (conf: 0.906) ██████████████████
+  → Cu. quinquefasciatus_MALE:  11 files (conf: 0.736) ██████████████
+  → An. dirus_MALE:   5 files (conf: 0.794) ███████████████
+  → Ae. albopictus_FEMALE:  26 files (conf: 0.929) ██████████████████
+  → Ae. aegypti_MALE:   2 files (conf: 0.580) ███████████
+  → Cu. quinquefasciatus_FEMALE:   2 files (conf: 0.680) █████████████
+
+Class 7:
+  → Ae. albopictus_MALE:  14 files (conf: 0.700) █████████████
+  → An. dirus_FEMALE:  14 files (conf: 0.469) █████████
+  → Ae. aegypti_MALE:   4 files (conf: 0.516) ██████████
+  → An. dirus_MALE:   7 files (conf: 0.411) ████████
+  → Cu. quinquefasciatus_FEMALE:   2 files (conf: 0.551) ███████████
+  → Ae. albopictus_FEMALE:   2 files (conf: 0.425) ████████
+
+============================================================

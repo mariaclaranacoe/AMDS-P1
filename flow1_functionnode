@@ -1,6 +1,0 @@
-msg.payload = {
-    total_count: Number(msg.payload.total_mosquito_count),
-    datetime: msg.payload.datetime
-};
-msg.measurement = "mosquito_count";
-return msg;

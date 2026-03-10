@@ -1,0 +1,54 @@
+const influxData = $input.item.json;
+
+let result = {
+  totalMosquitos: 0,
+  femaleCount: 0,
+  femalePercentage: 0,
+  maleCount: 0,
+  malePercentage: 0,
+  unknownCount: 0,
+  errorCount: 0,
+  device: 'raspberry_pi_4',
+  location: 'mosquito_listener',
+  model: 'unknown',
+  timestamp: null
+};
+
+// Check if we have valid InfluxDB response
+if (influxData?.results?.[0]?.series?.[0]) {
+  const series = influxData.results[0].series[0];
+  const columns = series.columns;
+  const allValues = series.values || [];
+  
+  // Take ONLY the MOST RECENT data point
+  const latestValues = allValues[allValues.length - 1] || [];
+  
+  // Find column indices
+  const totalIdx = columns.indexOf('total_files');
+  const femaleIdx = columns.indexOf('female_count');
+  const maleIdx = columns.indexOf('male_count');
+  const unknownIdx = columns.indexOf('unknown_count');
+  const errorIdx = columns.indexOf('error_count');
+  const femalePctIdx = columns.indexOf('female_percentage');
+  const malePctIdx = columns.indexOf('male_percentage');
+  const deviceIdx = columns.indexOf('device');
+  const locationIdx = columns.indexOf('location');
+  const modelIdx = columns.indexOf('model');
+  const timeIdx = columns.indexOf('time');
+  
+  result = {
+    totalMosquitos: Number(latestValues[totalIdx]) || 0,
+    femaleCount: Number(latestValues[femaleIdx]) || 0,
+    femalePercentage: Number(latestValues[femalePctIdx]) || 0,
+    maleCount: Number(latestValues[maleIdx]) || 0,
+    malePercentage: Number(latestValues[malePctIdx]) || 0,
+    unknownCount: Number(latestValues[unknownIdx]) || 0,
+    errorCount: Number(latestValues[errorIdx]) || 0,
+    device: latestValues[deviceIdx] || 'raspberry_pi_4',
+    location: latestValues[locationIdx] || 'mosquito_listener',
+    model: latestValues[modelIdx] || 'unknown',
+    timestamp: latestValues[timeIdx] || new Date().toISOString()
+  };
+}
+
+return [{ json: result }];

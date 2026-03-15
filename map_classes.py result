@@ -217,3 +217,113 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+
+
+
+
+
+
+
+
+
+=========================
+RESULTS
+=========================
+
+(mosquito_ai) teasis@IOTserver:~/mosquito_listener $ python map_classes.py
+============================================================
+MAPPING CLASS NUMBERS TO SPECIES/SEX
+============================================================
+Loading model: cnn_model_min_val_round10.h5
+Model input shape: (None, 2400, 1)
+Target SR: 8000 Hz
+Window: 300 ms (2400 samples)
+Hop: 150 ms (1200 samples)
+Found 1271 audio files
+
+⚠ Couldn't parse: Ae.Aegypti_1M _21D_25C_SmallCylinder_cut23_16bit.wav
+⚠ Couldn't parse: Ae.Aegypti_1M _21D_25C_SmallCylinder_cut22_16bit.wav
+Processed 50 files...
+Processed 100 files...
+Processed 150 files...
+Processed 200 files...
+Processed 250 files...
+Processed 300 files...
+Processed 350 files...
+Processed 400 files...
+Processed 450 files...
+Processed 500 files...
+Processed 550 files...
+Processed 600 files...
+Processed 650 files...
+Processed 700 files...
+Processed 750 files...
+Processed 800 files...
+Processed 850 files...
+Processed 900 files...
+Processed 950 files...
+Processed 1000 files...
+Processed 1050 files...
+Processed 1100 files...
+Processed 1150 files...
+Processed 1200 files...
+
+============================================================
+CLASS MAPPING RESULTS
+============================================================
+Total files parsed: 1227
+Total files processed: 1227
+
+
+Class 0:
+  → Ae. aegypti_FEMALE: 165 files (avg conf: 0.907, avg windows: 10.2)
+  → Ae. albopictus_FEMALE:  14 files (avg conf: 0.700, avg windows: 5.5)
+  → Cx. quinquefasciatus_FEMALE:  11 files (avg conf: 0.685, avg windows: 9.9)
+  => Dominant gender for class 0: FEMALE
+
+Class 1:
+  → Ae. aegypti_MALE: 135 files (avg conf: 0.864, avg windows: 9.0)
+  → An. dirus_MALE:  75 files (avg conf: 0.713, avg windows: 5.6)
+  → Cx. quinquefasciatus_MALE:   2 files (avg conf: 0.565, avg windows: 23.0)
+  → Ae. albopictus_MALE:   2 files (avg conf: 0.577, avg windows: 5.0)
+  → Cx. quinquefasciatus_FEMALE:   1 files (avg conf: 0.337, avg windows: 13.0)
+  => Dominant gender for class 1: MALE
+
+Class 2:
+  → Ae. albopictus_FEMALE: 168 files (avg conf: 0.878, avg windows: 10.9)
+  → Cx. quinquefasciatus_FEMALE:   2 files (avg conf: 0.437, avg windows: 2.0)
+  → Ae. aegypti_FEMALE:   1 files (avg conf: 0.610, avg windows: 3.0)
+  => Dominant gender for class 2: FEMALE
+
+Class 3:
+  → Ae. albopictus_MALE: 216 files (avg conf: 0.953, avg windows: 9.8)
+  → Cx. quinquefasciatus_FEMALE:   1 files (avg conf: 0.737, avg windows: 1.0)
+  => Dominant gender for class 3: MALE
+
+Class 4:
+  → An. dirus_FEMALE: 152 files (avg conf: 0.908, avg windows: 8.9)
+  => Dominant gender for class 4: FEMALE
+
+Class 5:
+  → An. dirus_MALE:  97 files (avg conf: 0.789, avg windows: 5.6)
+  → Ae. aegypti_MALE:   2 files (avg conf: 0.609, avg windows: 8.0)
+  => Dominant gender for class 5: MALE
+
+Class 6:
+  → Cx. quinquefasciatus_FEMALE:  84 files (avg conf: 0.894, avg windows: 23.8)
+  => Dominant gender for class 6: FEMALE
+
+Class 7:
+  → Cx. quinquefasciatus_MALE:  93 files (avg conf: 0.889, avg windows: 18.2)
+  → An. dirus_MALE:   6 files (avg conf: 0.589, avg windows: 3.7)
+  => Dominant gender for class 7: MALE
+
+============================================================
+SUGGESTED GENDER MAPPING
+============================================================
+FEMALE_CLASSES = [0, 2, 4, 6]
+MALE_CLASSES   = [1, 3, 5, 7]
+UNCERTAIN      = []
+============================================================

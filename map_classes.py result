@@ -1,110 +1,219 @@
-============================================================
-MAPPING CLASS NUMBERS TO SPECIES/SEX
-============================================================
-Loading model: cnn_model_min_val_round9.h5
-Found 1323 audio files
+(mosquito_ai) teasis@IOTserver:~/mosquito_listener $ cat map_classes.py
 
-⚠ Couldn't parse: Ae.Aegypti_1M _21D_25C_SmallCylinder_cut23_16bit.wav
-Processed 50 files...
-Processed 100 files...
-Processed 150 files...
-Processed 200 files...
-Processed 250 files...
-Processed 300 files...
-Processed 350 files...
-Processed 400 files...
-Processed 450 files...
-Processed 500 files...
-Processed 550 files...
-Processed 600 files...
-Processed 650 files...
-Processed 700 files...
-Processed 750 files...
-Processed 800 files...
-Processed 850 files...
-Processed 900 files...
-Processed 950 files...
-Processed 1000 files...
-Processed 1050 files...
-Processed 1100 files...
-Processed 1150 files...
-Processed 1200 files...
-Processed 1250 files...
+#!/usr/bin/env python3
+"""
+Map class numbers to actual species and sex based on filenames
+using MosquitoSong+-style preprocessing:
+- mono audio
+- resample to 8 kHz
+- 300 ms windows
+- 150 ms overlap
+- average probabilities across windows
+"""
 
-============================================================
-CLASS MAPPING RESULTS
-============================================================
-Total files parsed: 1279
-Total files processed: 1279
+import os
+import glob
+import numpy as np
+from tensorflow.keras.models import load_model
+import librosa
+import warnings
+warnings.filterwarnings('ignore')
+
+# Configuration
+MODEL_DIR = "./models/"
+AUDIO_DIR = "./data/processec_recs_backup/"
+MODEL_NAME = "cnn_model_min_val_round10.h5"
+
+TARGET_SR = 8000
+WINDOW_MS = 300
+HOP_MS = 150
+
+WINDOW_SAMPLES = int(TARGET_SR * WINDOW_MS / 1000)   # 2400
+HOP_SAMPLES = int(TARGET_SR * HOP_MS / 1000)         # 1200
 
 
-Class 0:
-  → Cu. quinquefasciatus_FEMALE:  41 files (conf: 0.831) ████████████████
-  → Cu. quinquefasciatus_MALE:   8 files (conf: 0.831) ████████████████
-  → An. dirus_FEMALE:   1 files (conf: 0.428) ████████
-  → Ae. albopictus_FEMALE:   1 files (conf: 0.410) ████████
-  → Ae. aegypti_FEMALE:   7 files (conf: 0.558) ███████████
+def extract_info_from_filename(filename):
+    """Extract species and sex from filename."""
+    basename = os.path.basename(filename)
 
-Class 1:
-  → An. dirus_FEMALE:  61 files (conf: 0.779) ███████████████
-  → Ae. aegypti_MALE:  93 files (conf: 0.821) ████████████████
-  → Ae. aegypti_FEMALE:  81 files (conf: 0.806) ████████████████
-  → Ae. albopictus_FEMALE:  40 files (conf: 0.761) ███████████████
-  → Cu. quinquefasciatus_MALE:  30 files (conf: 0.777) ███████████████
-  → Ae. albopictus_MALE: 150 files (conf: 0.856) █████████████████
-  → An. dirus_MALE:  45 files (conf: 0.663) █████████████
-  → Cu. quinquefasciatus_FEMALE:  26 files (conf: 0.725) ██████████████
+    # Species
+    if 'An.Dirus' in basename:
+        species = 'An. dirus'
+    elif 'Ae.Albopictus' in basename:
+        species = 'Ae. albopictus'
+    elif 'Cx.Quin' in basename:
+        species = 'Cx. quinquefasciatus'
+    elif 'Ae.Aegypti' in basename:
+        species = 'Ae. aegypti'
+    else:
+        species = None
 
-Class 2:
-  → Ae. aegypti_FEMALE:  24 files (conf: 0.859) █████████████████
-  → Cu. quinquefasciatus_FEMALE:   8 files (conf: 0.830) ████████████████
-  → Cu. quinquefasciatus_MALE:   2 files (conf: 0.796) ███████████████
-  → Ae. albopictus_FEMALE:   1 files (conf: 0.645) ████████████
+    # Sex
+    sex = None
+    if '_1M_' in basename:
+        sex = 'MALE'
+    elif '_1F_' in basename:
+        sex = 'FEMALE'
+    elif '_M_' in basename:
+        sex = 'MALE'
+    elif '_F_' in basename:
+        sex = 'FEMALE'
 
-Class 3:
-  → An. dirus_MALE:  60 files (conf: 0.791) ███████████████
-  → Cu. quinquefasciatus_MALE:  30 files (conf: 0.814) ████████████████
-  → Ae. albopictus_FEMALE:  86 files (conf: 0.794) ███████████████
-  → Ae. aegypti_MALE:  40 files (conf: 0.810) ████████████████
-  → Ae. albopictus_MALE:  37 files (conf: 0.821) ████████████████
-  → Ae. aegypti_FEMALE:  45 files (conf: 0.803) ████████████████
-  → Cu. quinquefasciatus_FEMALE:  28 files (conf: 0.733) ██████████████
-  → An. dirus_FEMALE:  35 files (conf: 0.844) ████████████████
+    return species, sex
 
-Class 4:
-  → An. dirus_MALE:  55 files (conf: 0.921) ██████████████████
-  → Ae. albopictus_FEMALE:  23 files (conf: 0.709) ██████████████
-  → Ae. aegypti_MALE:  11 files (conf: 0.863) █████████████████
-  → Ae. albopictus_MALE:   4 files (conf: 0.772) ███████████████
-  → Ae. aegypti_FEMALE:   3 files (conf: 0.589) ███████████
-  → Cu. quinquefasciatus_MALE:  13 files (conf: 0.891) █████████████████
-  → An. dirus_FEMALE:   5 files (conf: 0.761) ███████████████
-  → Cu. quinquefasciatus_FEMALE:   2 files (conf: 0.353) ███████
 
-Class 5:
-  → Ae. albopictus_MALE:  13 files (conf: 0.680) █████████████
-  → Ae. aegypti_FEMALE:   6 files (conf: 0.555) ███████████
-  → Cu. quinquefasciatus_MALE:  17 files (conf: 0.703) ██████████████
-  → Ae. aegypti_MALE:   2 files (conf: 0.653) █████████████
-  → Ae. albopictus_FEMALE:   3 files (conf: 0.464) █████████
-  → An. dirus_MALE:   6 files (conf: 0.716) ██████████████
-  → Cu. quinquefasciatus_FEMALE:  11 files (conf: 0.723) ██████████████
-  → An. dirus_FEMALE:   2 files (conf: 0.355) ███████
+def preprocess_audio_windows(audio_path):
+    """Load full audio, normalize, split into overlapping windows."""
+    try:
+        y, sr = librosa.load(audio_path, sr=TARGET_SR, mono=True)
+        y = np.nan_to_num(y, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
 
-Class 6:
-  → An. dirus_FEMALE:  34 files (conf: 0.906) ██████████████████
-  → Cu. quinquefasciatus_MALE:  11 files (conf: 0.736) ██████████████
-  → An. dirus_MALE:   5 files (conf: 0.794) ███████████████
-  → Ae. albopictus_FEMALE:  26 files (conf: 0.929) ██████████████████
-  → Ae. aegypti_MALE:   2 files (conf: 0.580) ███████████
-  → Cu. quinquefasciatus_FEMALE:   2 files (conf: 0.680) █████████████
+        max_val = np.max(np.abs(y))
+        if max_val > 0:
+            y = y / max_val
 
-Class 7:
-  → Ae. albopictus_MALE:  14 files (conf: 0.700) █████████████
-  → An. dirus_FEMALE:  14 files (conf: 0.469) █████████
-  → Ae. aegypti_MALE:   4 files (conf: 0.516) ██████████
-  → An. dirus_MALE:   7 files (conf: 0.411) ████████
-  → Cu. quinquefasciatus_FEMALE:   2 files (conf: 0.551) ███████████
-  → Ae. albopictus_FEMALE:   2 files (conf: 0.425) ████████
+        if len(y) < WINDOW_SAMPLES:
+            y = np.pad(y, (0, WINDOW_SAMPLES - len(y)), mode='constant')
 
-============================================================
+        windows = []
+        for start in range(0, len(y) - WINDOW_SAMPLES + 1, HOP_SAMPLES):
+            segment = y[start:start + WINDOW_SAMPLES]
+            segment = segment.reshape(-1, 1).astype(np.float32)
+            windows.append(segment)
+
+        if not windows:
+            return None
+
+        return np.array(windows, dtype=np.float32)
+
+    except Exception as e:
+        print(f"Error loading {audio_path}: {e}")
+        return None
+
+
+def predict_class(audio_path, model):
+    """Predict class by averaging probabilities across all windows."""
+    windows = preprocess_audio_windows(audio_path)
+    if windows is None:
+        return None, None, 0
+
+    predictions = model.predict(windows, verbose=0)
+    avg_pred = np.mean(predictions, axis=0)
+
+    class_num = int(np.argmax(avg_pred))
+    confidence = float(np.max(avg_pred))
+    window_count = len(windows)
+
+    return class_num, confidence, window_count
+
+
+def main():
+    print("=" * 60)
+    print("MAPPING CLASS NUMBERS TO SPECIES/SEX")
+    print("=" * 60)
+
+    # Load model
+    model_path = os.path.join(MODEL_DIR, MODEL_NAME)
+    print(f"Loading model: {MODEL_NAME}")
+    model = load_model(model_path, compile=False)
+
+    print(f"Model input shape: {model.input_shape}")
+    print(f"Target SR: {TARGET_SR} Hz")
+    print(f"Window: {WINDOW_MS} ms ({WINDOW_SAMPLES} samples)")
+    print(f"Hop: {HOP_MS} ms ({HOP_SAMPLES} samples)")
+
+    # Find audio files
+    audio_files = glob.glob(os.path.join(AUDIO_DIR, "*.wav"))
+    print(f"Found {len(audio_files)} audio files\n")
+
+    # Store mappings
+    class_mapping = {i: {} for i in range(8)}
+    total_processed = 0
+    total_parsed = 0
+
+    for i, audio_file in enumerate(audio_files):
+        species, sex = extract_info_from_filename(audio_file)
+
+        if species is None or sex is None:
+            if i < 20:
+                print(f"⚠ Couldn't parse: {os.path.basename(audio_file)}")
+            continue
+
+        total_parsed += 1
+
+        class_num, confidence, window_count = predict_class(audio_file, model)
+        if class_num is None:
+            continue
+
+        key = f"{species}_{sex}"
+
+        if key not in class_mapping[class_num]:
+            class_mapping[class_num][key] = {
+                'count': 0,
+                'confidence_sum': 0.0,
+                'windows_sum': 0
+            }
+
+        class_mapping[class_num][key]['count'] += 1
+        class_mapping[class_num][key]['confidence_sum'] += confidence
+        class_mapping[class_num][key]['windows_sum'] += window_count
+        total_processed += 1
+
+        if total_processed % 50 == 0:
+            print(f"Processed {total_processed} files...")
+
+    print("\n" + "=" * 60)
+    print("CLASS MAPPING RESULTS")
+    print("=" * 60)
+    print(f"Total files parsed: {total_parsed}")
+    print(f"Total files processed: {total_processed}\n")
+
+    dominant_gender = {}
+
+    for class_num in range(8):
+        print(f"\nClass {class_num}:")
+        if class_mapping[class_num]:
+            female_votes = 0
+            male_votes = 0
+
+            for key, data in sorted(class_mapping[class_num].items(), key=lambda x: x[1]['count'], reverse=True):
+                avg_confidence = data['confidence_sum'] / data['count']
+                avg_windows = data['windows_sum'] / data['count']
+                print(
+                    f"  → {key}: {data['count']:3d} files "
+                    f"(avg conf: {avg_confidence:.3f}, avg windows: {avg_windows:.1f})"
+                )
+
+                if key.endswith("_FEMALE"):
+                    female_votes += data['count']
+                elif key.endswith("_MALE"):
+                    male_votes += data['count']
+
+            if female_votes > male_votes:
+                dominant_gender[class_num] = "FEMALE"
+            elif male_votes > female_votes:
+                dominant_gender[class_num] = "MALE"
+            else:
+                dominant_gender[class_num] = "UNCERTAIN"
+
+            print(f"  => Dominant gender for class {class_num}: {dominant_gender[class_num]}")
+        else:
+            print("  No samples found")
+            dominant_gender[class_num] = "UNCERTAIN"
+
+    print("\n" + "=" * 60)
+    print("SUGGESTED GENDER MAPPING")
+    print("=" * 60)
+
+    female_classes = [c for c, g in dominant_gender.items() if g == "FEMALE"]
+    male_classes = [c for c, g in dominant_gender.items() if g == "MALE"]
+    uncertain_classes = [c for c, g in dominant_gender.items() if g == "UNCERTAIN"]
+
+    print(f"FEMALE_CLASSES = {female_classes}")
+    print(f"MALE_CLASSES   = {male_classes}")
+    print(f"UNCERTAIN      = {uncertain_classes}")
+    print("=" * 60)
+
+
+if __name__ == "__main__":
+    main()

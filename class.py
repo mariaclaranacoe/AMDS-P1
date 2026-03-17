@@ -1,71 +1,71 @@
-#!/usr/bin/env python3 (FINAL)
+#!/usr/bin/env python3
 """
-Mosquito gender classifier - WITH INFLUXDB SUPPORT
-Uses MosquitoSong+ style preprocessing:
-- mono audio
-- resample to 8 kHz
-- 300 ms windows
-- 150 ms overlap
-- average probabilities across windows
-
-Sends results to InfluxDB for Grafana visualization
-Resets count every day at 7:07 AM for 24-hour running total
-Saves ONLY ONE final 24-hour summary file at reset time
+Mosquito gender classifier
+Updated architecture:
+- Official total mosquito count comes from ESP32 break-beam sensors via MQTT
+- This script only classifies uploaded audio files
+- Saves per-file classification results locally
+- Maintains 24-hour gender statistics locally
+- Resets gender stats daily at 07:07 AM
+- Sends data to InfluxDB for Grafana visualization
 """
 
 import os
 import glob
 import shutil
 import json
+import csv
 import numpy as np
 from datetime import datetime, timedelta
 import warnings
+import socket
 warnings.filterwarnings('ignore')
-
-# ============================================
-# IMPORT CHECKS
-# ============================================
-
-try:
-    from influxdb import InfluxDBClient
-    INFLUX_AVAILABLE = True
-except ImportError:
-    INFLUX_AVAILABLE = False
-    print("InfluxDB library not available. Install with: pip install influxdb")
 
 try:
     os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
     from tensorflow.keras.models import load_model
     import tensorflow as tf
-    TF_AVAILABLE = True
 except ImportError:
-    TF_AVAILABLE = False
     print("TensorFlow not available")
-    exit(1)
+    raise SystemExit(1)
+
+# ============================================
+# INFLUXDB IMPORTS
+# ============================================
+try:
+    from influxdb import InfluxDBClient
+    INFLUXDB_AVAILABLE = True
+except ImportError:
+    print("InfluxDB client not available. Install with: pip install influxdb")
+    INFLUXDB_AVAILABLE = False
 
 # ============================================
 # CONFIGURATION
 # ============================================
 
-INFLUX_CONFIG = {
-    'host': '192.168.0.24',
-    'port': 8086,
-    'database': 'mosquito_db',
-    'enabled': True,
-    'username': None,
-    'password': None
-}
-
 BASE_DIR = "/home/teasis/mosquito_listener"
-MODEL_DIR = os.path.join(BASE_DIR, "models/")
-AUDIO_DIR = os.path.join(BASE_DIR, "data/mosquito_recordings/")
-PROCESSED_DIR = os.path.join(BASE_DIR, "data/processed_recordings/")
-RESULTS_DIR = os.path.join(BASE_DIR, "classification_results/")
+MODEL_DIR = os.path.join(BASE_DIR, "models")
+AUDIO_DIR = os.path.join(BASE_DIR, "data/mosquito_recordings")
+PROCESSED_DIR = os.path.join(BASE_DIR, "data/processed_recordings")
+RESULTS_DIR = os.path.join(BASE_DIR, "classification_results")
 
-COUNT_FILE = os.path.join(BASE_DIR, "mosquito_24h_count.json")
+MODEL_NAME = "cnn_model_min_val_round10.h5"
+
+# Local files for classification-only tracking
+GENDER_COUNT_FILE = os.path.join(BASE_DIR, "gender_24h_stats.json")
+RESULTS_CSV = os.path.join(RESULTS_DIR, "classification_log.csv")
 
 RESET_HOUR = 7
 RESET_MINUTE = 7
+
+# ============================================
+# INFLUXDB CONFIGURATION
+# ============================================
+INFLUXDB_HOST = "192.168.0.24"  # Your Raspberry Pi IP
+INFLUXDB_PORT = 8086
+INFLUXDB_DATABASE = "mosquito_db"
+INFLUXDB_USER = "teasis"
+INFLUXDB_PASSWORD = "teasis"
 
 os.makedirs(PROCESSED_DIR, exist_ok=True)
 os.makedirs(RESULTS_DIR, exist_ok=True)
@@ -73,8 +73,6 @@ os.makedirs(RESULTS_DIR, exist_ok=True)
 # ============================================
 # MODEL + PREPROCESSING SETTINGS
 # ============================================
-
-MODEL_NAME = "cnn_model_min_val_round10.h5"
 
 TARGET_SR = 8000
 WINDOW_MS = 300
@@ -87,94 +85,304 @@ FEMALE_CLASSES = [0, 2, 4, 6]
 MALE_CLASSES   = [1, 3, 5, 7]
 
 # ============================================
-# FUNCTION: send_to_influxdb()
+# INFLUXDB INITIALIZATION
 # ============================================
-def send_to_influxdb(stats):
-    if not INFLUX_AVAILABLE or not INFLUX_CONFIG['enabled']:
-        return False
+
+def init_influxdb():
+    """Initialize InfluxDB client"""
+    if not INFLUXDB_AVAILABLE:
+        print("⚠️ InfluxDB client not available - install with: pip install influxdb")
+        return None
 
     try:
         client = InfluxDBClient(
-            host=INFLUX_CONFIG['host'],
-            port=INFLUX_CONFIG['port'],
-            database=INFLUX_CONFIG['database']
+            host=INFLUXDB_HOST,
+            port=INFLUXDB_PORT,
+            username=INFLUXDB_USER,
+            password=INFLUXDB_PASSWORD,
+            database=INFLUXDB_DATABASE,
+            timeout=5
         )
 
-        json_body = [{
-            "measurement": "mosquito_classification",
-            "time": datetime.utcnow().isoformat(),
-            "fields": {
-                "total_files": stats['total'],
-                "female_count": stats['female'],
-                "male_count": stats['male'],
-                "unknown_count": stats.get('unknown', 0),
-                "error_count": stats.get('error', 0),
-                "female_percentage": round(stats['female_pct'], 2),
-                "male_percentage": round(stats['male_pct'], 2)
-            },
-            "tags": {
-                "model": stats['model'],
-                "device": "raspberry_pi_4",
-                "location": "mosquito_listener"
-            }
-        }]
+        # Test connection
+        client.ping()
+        print(f"✅ Connected to InfluxDB at {INFLUXDB_HOST}:{INFLUXDB_PORT}")
 
+        # Ensure database exists
+        databases = [db['name'] for db in client.get_list_database()]
+        if INFLUXDB_DATABASE not in databases:
+            client.create_database(INFLUXDB_DATABASE)
+            print(f"✅ Created database: {INFLUXDB_DATABASE}")
+
+        return client
+    except Exception as e:
+        print(f"⚠️ InfluxDB connection failed: {e}")
+        print("⚠️ Data will be saved locally only")
+        return None
+
+# ============================================
+# INFLUXDB FUNCTIONS
+# ============================================
+
+def send_to_influxdb(client, measurement, fields, tags=None):
+    """Send data to InfluxDB"""
+    if client is None:
+        return False
+
+    try:
+        json_body = [
+            {
+                "measurement": measurement,
+                "tags": tags or {},
+                "fields": fields,
+                "time": datetime.utcnow().isoformat() + "Z"
+            }
+        ]
         client.write_points(json_body)
         return True
-
     except Exception as e:
-        print(f"✗ Failed to send to InfluxDB: {e}")
+        print(f"⚠️ InfluxDB write failed: {e}")
         return False
 
+def send_classification_result(client, filename, gender, confidence, predicted_class, window_count):
+    """Send individual classification result to InfluxDB"""
+    if client is None:
+        return
+
+    # Convert gender to numeric value for easier graphing
+    gender_value = 1.0 if gender == "FEMALE" else (0.0 if gender == "MALE" else 0.5)
+
+    fields = {
+        "gender_value": float(gender_value),
+        "confidence": float(confidence) if confidence else 0.0,
+        "window_count": int(window_count),
+        "predicted_class": int(predicted_class) if predicted_class else -1
+    }
+
+    tags = {
+        "gender": str(gender),
+        "filename": str(filename),
+        "model": str(MODEL_NAME),
+        "host": str(socket.gethostname())
+    }
+
+    success = send_to_influxdb(client, "mosquito_classification", fields, tags)
+    if success:
+        print(f"  📤 Sent classification to InfluxDB")
+
+def send_gender_stats(client, stats):
+    """Send cumulative gender statistics to InfluxDB"""
+    if client is None:
+        return
+
+    fields = {
+        "female_total": int(stats.get("female_total", 0)),
+        "male_total": int(stats.get("male_total", 0)),
+        "unknown_total": int(stats.get("unknown_total", 0)),
+        "error_total": int(stats.get("error_total", 0)),
+        "total_classified": int(
+            stats.get("female_total", 0) +
+            stats.get("male_total", 0) +
+            stats.get("unknown_total", 0) +
+            stats.get("error_total", 0)
+        )
+    }
+
+    tags = {
+        "reset_date": str(stats.get("last_reset_date", "")),
+        "type": "cumulative"
+    }
+
+    success = send_to_influxdb(client, "mosquito_gender_stats", fields, tags)
+    if success:
+        print(f"  📤 Sent cumulative stats to InfluxDB")
+
+def send_daily_summary(client, old_stats):
+    """Send daily reset summary to InfluxDB"""
+    if client is None or old_stats is None:
+        return
+
+    fields = {
+        "female_total": int(old_stats.get("female_total", 0)),
+        "male_total": int(old_stats.get("male_total", 0)),
+        "unknown_total": int(old_stats.get("unknown_total", 0)),
+        "error_total": int(old_stats.get("error_total", 0)),
+        "total_classified": int(
+            old_stats.get("female_total", 0) +
+            old_stats.get("male_total", 0) +
+            old_stats.get("unknown_total", 0) +
+            old_stats.get("error_total", 0)
+        )
+    }
+
+    tags = {
+        "reset_date": datetime.now().strftime("%Y-%m-%d"),
+        "type": "daily_summary"
+    }
+
+    success = send_to_influxdb(client, "mosquito_daily_summary", fields, tags)
+    if success:
+        print(f"  📤 Sent daily summary to InfluxDB")
+
 # ============================================
-# FUNCTION: save_final_summary_to_file()
-# PURPOSE: Save ONLY the full 24-hour final summary at reset time
+# HELPERS
 # ============================================
-def save_final_summary_to_file(stats):
+
+def ensure_csv_exists():
+    if not os.path.exists(RESULTS_CSV):
+        with open(RESULTS_CSV, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                "timestamp",
+                "filename",
+                "gender",
+                "confidence",
+                "predicted_class",
+                "window_count",
+                "model"
+            ])
+
+
+def get_today_reset_time(now=None):
+    now = now or datetime.now()
+    return now.replace(
+        hour=RESET_HOUR,
+        minute=RESET_MINUTE,
+        second=0,
+        microsecond=0
+    )
+
+
+def load_gender_stats():
+    now = datetime.now()
+    current_reset = get_today_reset_time(now)
+
+    default_stats = {
+        "female_total": 0,
+        "male_total": 0,
+        "unknown_total": 0,
+        "error_total": 0,
+        "last_update": now.isoformat(),
+        "last_reset_date": now.strftime("%Y-%m-%d"),
+        "reset_time": f"{RESET_HOUR:02d}:{RESET_MINUTE:02d}"
+    }
+
+    if not os.path.exists(GENDER_COUNT_FILE):
+        return default_stats, False, None
+
     try:
-        current_date = datetime.now().strftime("%Y-%m-%d")
-        filename = os.path.join(RESULTS_DIR, f"summary_{current_date}_final.txt")
+        with open(GENDER_COUNT_FILE, "r") as f:
+            saved = json.load(f)
 
-        next_reset = datetime.now() + timedelta(days=1)
-        next_reset_str = next_reset.strftime('%Y-%m-%d') + f" {RESET_HOUR:02d}:{RESET_MINUTE:02d} AM"
+        last_update_str = saved.get("last_update", "2000-01-01T00:00:00")
+        last_update = datetime.fromisoformat(last_update_str)
 
-        with open(filename, 'w') as f:
+        should_reset = (last_update < current_reset and now >= current_reset)
+
+        old_stats = None
+        if should_reset:
+            old_stats = {
+                "female_total": saved.get("female_total", 0),
+                "male_total": saved.get("male_total", 0),
+                "unknown_total": saved.get("unknown_total", 0),
+                "error_total": saved.get("error_total", 0),
+                "last_update": saved.get("last_update", last_update_str),
+                "last_reset_date": saved.get("last_reset_date", "unknown"),
+                "reset_time": saved.get("reset_time", f"{RESET_HOUR:02d}:{RESET_MINUTE:02d}")
+            }
+            return default_stats, True, old_stats
+
+        return saved, False, None
+
+    except Exception as e:
+        print(f"Warning: could not load gender stats: {e}")
+        return default_stats, False, None
+
+
+def save_gender_stats(stats):
+    stats["last_update"] = datetime.now().isoformat()
+    with open(GENDER_COUNT_FILE, "w") as f:
+        json.dump(stats, f, indent=2)
+
+
+def save_final_gender_summary(old_stats):
+    try:
+        summary_date = datetime.now().strftime("%Y-%m-%d")
+        filename = os.path.join(RESULTS_DIR, f"gender_summary_{summary_date}_final.txt")
+
+        total = (
+            old_stats["female_total"] +
+            old_stats["male_total"] +
+            old_stats["unknown_total"] +
+            old_stats["error_total"]
+        )
+
+        female_pct = (old_stats["female_total"] / total * 100) if total > 0 else 0
+        male_pct = (old_stats["male_total"] / total * 100) if total > 0 else 0
+        unknown_pct = (old_stats["unknown_total"] / total * 100) if total > 0 else 0
+        error_pct = (old_stats["error_total"] / total * 100) if total > 0 else 0
+
+        with open(filename, "w") as f:
             f.write("=" * 60 + "\n")
-            f.write("MOSQUITO CLASSIFICATION FINAL 24-HOUR SUMMARY\n")
+            f.write("MOSQUITO GENDER CLASSIFICATION FINAL 24-HOUR SUMMARY\n")
             f.write("=" * 60 + "\n")
             f.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-            f.write("Summary type: FINAL 24-HOUR SUMMARY\n")
-            f.write(f"This summary covers: Previous 24 hours (until {RESET_HOUR:02d}:{RESET_MINUTE:02d} AM)\n")
-            f.write(f"Next reset will be: {next_reset_str}\n")
-            f.write("-" * 60 + "\n\n")
-
-            f.write("24-HOUR TOTALS:\n")
-            f.write(f"   Total mosquitoes: {stats['total']}\n")
-            f.write(f"   Females: {stats['female']} ({stats['female_pct']:.1f}%)\n")
-            f.write(f"   Males: {stats['male']} ({stats['male_pct']:.1f}%)\n")
-
-            if stats.get('unknown', 0) > 0:
-                unknown_pct = (stats['unknown'] / stats['total']) * 100 if stats['total'] > 0 else 0
-                f.write(f"   Unknown: {stats['unknown']} ({unknown_pct:.1f}%)\n")
-
-            if stats.get('error', 0) > 0:
-                error_pct = (stats['error'] / stats['total']) * 100 if stats['total'] > 0 else 0
-                f.write(f"   Errors: {stats['error']} ({error_pct:.1f}%)\n")
-
-            f.write("\n" + "-" * 60 + "\n")
-            f.write(f"Model used: {stats['model']}\n")
+            f.write(f"Reset time: {RESET_HOUR:02d}:{RESET_MINUTE:02d} AM\n")
+            f.write(f"Model used: {MODEL_NAME}\n")
+            f.write("-" * 60 + "\n")
+            f.write(f"Total classified files: {total}\n")
+            f.write(f"Female:  {old_stats['female_total']} ({female_pct:.1f}%)\n")
+            f.write(f"Male:    {old_stats['male_total']} ({male_pct:.1f}%)\n")
+            f.write(f"Unknown: {old_stats['unknown_total']} ({unknown_pct:.1f}%)\n")
+            f.write(f"Error:   {old_stats['error_total']} ({error_pct:.1f}%)\n")
             f.write("=" * 60 + "\n")
 
-        print(f"Final 24-hour summary saved to: {filename}")
-        return True
+        print(f"Saved final gender summary: {filename}")
 
     except Exception as e:
-        print(f"Warning: Could not save final summary file: {e}")
-        return False
+        print(f"Warning: could not save final gender summary: {e}")
+
+
+def append_result_to_csv(filename, gender, confidence, predicted_class, window_count, model_name):
+    try:
+        ensure_csv_exists()
+        with open(RESULTS_CSV, "a", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                filename,
+                gender,
+                "" if confidence is None else round(float(confidence), 6),
+                "" if predicted_class is None else int(predicted_class),
+                int(window_count),
+                model_name
+            ])
+    except Exception as e:
+        print(f"Warning: could not append to CSV: {e}")
+
+
+def save_result_json(filename, gender, confidence, predicted_class, window_count, model_name):
+    try:
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        json_name = os.path.join(RESULTS_DIR, f"{stamp}_{filename}.json")
+        payload = {
+            "timestamp": datetime.now().isoformat(),
+            "filename": filename,
+            "gender": gender,
+            "confidence": None if confidence is None else float(confidence),
+            "predicted_class": None if predicted_class is None else int(predicted_class),
+            "window_count": int(window_count),
+            "model": model_name
+        }
+        with open(json_name, "w") as f:
+            json.dump(payload, f, indent=2)
+    except Exception as e:
+        print(f"Warning: could not save result JSON for {filename}: {e}")
 
 # ============================================
-# FUNCTION: preprocess_audio_windows()
+# AUDIO PREPROCESSING
 # ============================================
+
 def preprocess_audio_windows(audio_path):
     try:
         import librosa
@@ -211,9 +419,9 @@ def preprocess_audio_windows(audio_path):
         return None
 
 # ============================================
-# FUNCTION: classify_with_model()
-# No double prediction
+# CLASSIFICATION
 # ============================================
+
 def classify_with_model(audio_path, model):
     try:
         windows = preprocess_audio_windows(audio_path)
@@ -241,90 +449,54 @@ def classify_with_model(audio_path, model):
         return "ERROR", None, 0, None
 
 # ============================================
-# MAIN FUNCTION
+# MAIN
 # ============================================
+
 def main():
-    print("\n" + "=" * 50)
+    print("\n" + "=" * 60)
     print("MOSQUITO GENDER CLASSIFIER")
-    print("WITH INFLUXDB SUPPORT - 24H RUNNING TOTAL")
-    print(f"MODEL: {MODEL_NAME}")
-    print(f"PREPROCESSING: {TARGET_SR} Hz, {WINDOW_MS} ms windows, {HOP_MS} ms hop")
-    print(f"RESETS DAILY AT {RESET_HOUR:02d}:{RESET_MINUTE:02d} AM")
-    print(f"FINAL SUMMARY DIRECTORY: {RESULTS_DIR}")
-    print("=" * 50)
+    print("Classification-only mode")
+    print("Official total count is handled by ESP32 break-beam sensors via MQTT")
+    print("=" * 60)
+    print(f"Model: {MODEL_NAME}")
+    print(f"Preprocessing: {TARGET_SR} Hz, {WINDOW_MS} ms windows, {HOP_MS} ms hop")
+    print(f"Gender stats reset daily at {RESET_HOUR:02d}:{RESET_MINUTE:02d} AM")
+    print("-" * 60)
 
-    run_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    current_time = datetime.now()
-    print(f"Run started at: {run_time}")
-    print("-" * 50)
+    # Initialize InfluxDB
+    influx_client = init_influxdb()
+    if influx_client:
+        print("✅ InfluxDB enabled - data will be sent to database")
+    else:
+        print("⚠️ InfluxDB disabled - local files only")
+    print("-" * 60)
 
-    running_female = 0
-    running_male = 0
-    running_unknown = 0
-    running_error = 0
-    current_date = str(datetime.now().date())
+    stats, should_reset, old_stats = load_gender_stats()
 
-    should_reset = False
-    old_totals = None
+    if should_reset and old_stats is not None:
+        print(f"Reset time reached ({RESET_HOUR:02d}:{RESET_MINUTE:02d} AM)")
 
-    try:
-        with open(COUNT_FILE, 'r') as f:
-            saved_data = json.load(f)
+        # Send daily summary to InfluxDB before reset
+        if influx_client:
+            send_daily_summary(influx_client, old_stats)
 
-            last_update_str = saved_data.get('last_update', '2000-01-01T00:00:00')
-            last_update = datetime.fromisoformat(last_update_str)
-
-            today_reset = datetime.now().replace(
-                hour=RESET_HOUR,
-                minute=RESET_MINUTE,
-                second=0,
-                microsecond=0
-            )
-
-            if last_update < today_reset and current_time >= today_reset:
-                should_reset = True
-                old_totals = {
-                    'total': saved_data.get('female_total', 0) + saved_data.get('male_total', 0) +
-                             saved_data.get('unknown_total', 0) + saved_data.get('error_total', 0),
-                    'female': saved_data.get('female_total', 0),
-                    'male': saved_data.get('male_total', 0),
-                    'unknown': saved_data.get('unknown_total', 0),
-                    'error': saved_data.get('error_total', 0)
-                }
-                print(f"Reset time reached ({RESET_HOUR:02d}:{RESET_MINUTE:02d} AM) - saving final 24-hour summary and starting new count")
-            else:
-                running_female = saved_data.get('female_total', 0)
-                running_male = saved_data.get('male_total', 0)
-                running_unknown = saved_data.get('unknown_total', 0)
-                running_error = saved_data.get('error_total', 0)
-                print(f"Loaded running totals: {running_female + running_male + running_unknown + running_error} total so far")
-                print(f"   Last update: {last_update_str}")
-                print(f"   Next reset: {RESET_HOUR:02d}:{RESET_MINUTE:02d} AM")
-
-    except FileNotFoundError:
-        print("No previous totals found - starting fresh")
-    except Exception as e:
-        print(f"Warning: Error loading totals: {e}")
-
-    if should_reset and old_totals:
-        old_totals['model'] = MODEL_NAME
-        old_totals['female_pct'] = (old_totals['female'] / old_totals['total'] * 100) if old_totals['total'] > 0 else 0
-        old_totals['male_pct'] = (old_totals['male'] / old_totals['total'] * 100) if old_totals['total'] > 0 else 0
-        save_final_summary_to_file(old_totals)
-
-        running_female = 0
-        running_male = 0
-        running_unknown = 0
-        running_error = 0
-        print("Count has been reset to 0 for new 24-hour period")
+        save_final_gender_summary(old_stats)
+        save_gender_stats(stats)
+        print("Gender stats reset to 0 for new 24-hour period")
+    else:
+        total_gender = (
+            stats.get("female_total", 0) +
+            stats.get("male_total", 0) +
+            stats.get("unknown_total", 0) +
+            stats.get("error_total", 0)
+        )
+        print(f"Loaded current gender stats: {total_gender} classified files in current 24-hour period")
 
     model_path = os.path.join(MODEL_DIR, MODEL_NAME)
-    model_name = MODEL_NAME
-
-    print(f"Using model: {model_name}")
 
     try:
         model = load_model(model_path, compile=False)
+        print(f"Using model: {MODEL_NAME}")
         print(f"Model input shape: {model.input_shape}")
         print(f"Model output shape: {model.output_shape}")
     except Exception as e:
@@ -336,23 +508,20 @@ def main():
     audio_files.extend(glob.glob(os.path.join(AUDIO_DIR, "*.flac")))
 
     if not audio_files:
-        print("No audio files found!")
+        print("No audio files found.")
         return
 
-    total_files = len(audio_files)
-    print(f"\nProcessing {total_files} new files...")
+    print(f"\nProcessing {len(audio_files)} uploaded audio file(s)...")
 
-    female_count = 0
-    male_count = 0
-    unknown_count = 0
-    error_count = 0
-
+    run_female = 0
+    run_male = 0
+    run_unknown = 0
+    run_error = 0
     class_counts = {i: 0 for i in range(8)}
     confidence_values = []
 
-    for i, audio_file in enumerate(audio_files):
-        if (i + 1) % 100 == 0:
-            print(f"  Progress: {i+1}/{total_files}")
+    for idx, audio_file in enumerate(audio_files, start=1):
+        print(f"\n[{idx}/{len(audio_files)}] Processing: {os.path.basename(audio_file)}")
 
         gender, confidence, window_count, predicted_class = classify_with_model(audio_file, model)
 
@@ -363,106 +532,99 @@ def main():
             class_counts[predicted_class] += 1
 
         if gender == "FEMALE":
-            female_count += 1
+            run_female += 1
+            stats["female_total"] += 1
         elif gender == "MALE":
-            male_count += 1
+            run_male += 1
+            stats["male_total"] += 1
         elif gender == "UNKNOWN":
-            unknown_count += 1
+            run_unknown += 1
+            stats["unknown_total"] += 1
         else:
-            error_count += 1
+            run_error += 1
+            stats["error_total"] += 1
+
+        print(f"  Gender: {gender}")
+        print(f"  Confidence: {confidence if confidence is not None else 'N/A'}")
+        print(f"  Predicted class: {predicted_class if predicted_class is not None else 'N/A'}")
+        print(f"  Window count: {window_count}")
+
+        base_name = os.path.basename(audio_file)
+
+        # Save to local files
+        append_result_to_csv(base_name, gender, confidence, predicted_class, window_count, MODEL_NAME)
+        save_result_json(base_name, gender, confidence, predicted_class, window_count, MODEL_NAME)
+
+        # Send to InfluxDB
+        if influx_client:
+            send_classification_result(
+                influx_client,
+                base_name,
+                gender,
+                confidence,
+                predicted_class,
+                window_count
+            )
 
         try:
-            shutil.move(audio_file, os.path.join(PROCESSED_DIR, os.path.basename(audio_file)))
+            shutil.move(audio_file, os.path.join(PROCESSED_DIR, base_name))
         except Exception as e:
-            print(f"Could not move file {audio_file}: {e}")
+            print(f"Warning: could not move file {audio_file}: {e}")
 
-    total_female_24h = running_female + female_count
-    total_male_24h = running_male + male_count
-    total_unknown_24h = running_unknown + unknown_count
-    total_error_24h = running_error + error_count
-    total_all_24h = total_female_24h + total_male_24h + total_unknown_24h + total_error_24h
+    # Save updated stats
+    save_gender_stats(stats)
 
-    female_pct_run = (female_count / total_files) * 100 if total_files > 0 else 0
-    male_pct_run = (male_count / total_files) * 100 if total_files > 0 else 0
+    # Send cumulative stats to InfluxDB
+    if influx_client:
+        send_gender_stats(influx_client, stats)
 
-    female_pct_24h = (total_female_24h / total_all_24h) * 100 if total_all_24h > 0 else 0
-    male_pct_24h = (total_male_24h / total_all_24h) * 100 if total_all_24h > 0 else 0
+    total_current_24h = (
+        stats["female_total"] +
+        stats["male_total"] +
+        stats["unknown_total"] +
+        stats["error_total"]
+    )
 
-    print("\n" + "=" * 50)
-    print("CLASSIFICATION SUMMARY")
-    print("=" * 50)
-    print(f"New recordings this run: {total_files}")
-    print(f"Female (this run): {female_count} ({female_pct_run:.1f}%)")
-    print(f"Male (this run):   {male_count} ({male_pct_run:.1f}%)")
+    female_pct = (stats["female_total"] / total_current_24h * 100) if total_current_24h > 0 else 0
+    male_pct = (stats["male_total"] / total_current_24h * 100) if total_current_24h > 0 else 0
 
-    print("\n--- 24-HOUR RUNNING TOTALS ---")
-    print(f"Total last 24h: {total_all_24h}")
-    print(f"Females last 24h: {total_female_24h} ({female_pct_24h:.1f}%)")
-    print(f"Males last 24h:   {total_male_24h} ({male_pct_24h:.1f}%)")
-
-    if unknown_count > 0:
-        unknown_pct_run = (unknown_count / total_files) * 100 if total_files > 0 else 0
-        unknown_pct_24h = (total_unknown_24h / total_all_24h) * 100 if total_all_24h > 0 else 0
-        print(f"\nUnknown this run: {unknown_count} ({unknown_pct_run:.1f}%)")
-        print(f"Unknown last 24h: {total_unknown_24h} ({unknown_pct_24h:.1f}%)")
-
-    if error_count > 0:
-        error_pct_run = (error_count / total_files) * 100 if total_files > 0 else 0
-        error_pct_24h = (total_error_24h / total_all_24h) * 100 if total_all_24h > 0 else 0
-        print(f"Errors this run: {error_count} ({error_pct_run:.1f}%)")
-        print(f"Errors last 24h: {total_error_24h} ({error_pct_24h:.1f}%)")
+    print("\n" + "=" * 60)
+    print("RUN SUMMARY")
+    print("=" * 60)
+    print(f"Processed this run: {len(audio_files)}")
+    print(f"Female this run:  {run_female}")
+    print(f"Male this run:    {run_male}")
+    print(f"Unknown this run: {run_unknown}")
+    print(f"Errors this run:  {run_error}")
 
     if confidence_values:
-        print(f"\nAverage confidence this run: {np.mean(confidence_values):.3f}")
+        print(f"Average confidence this run: {np.mean(confidence_values):.3f}")
+
+    print("\nCurrent 24-hour gender stats:")
+    print(f"Total classified: {total_current_24h}")
+    print(f"Female total: {stats['female_total']} ({female_pct:.1f}%)")
+    print(f"Male total:   {stats['male_total']} ({male_pct:.1f}%)")
+    print(f"Unknown total: {stats['unknown_total']}")
+    print(f"Error total:   {stats['error_total']}")
 
     print("\nClass distribution this run:")
     for cls, count in class_counts.items():
         if count > 0:
             print(f"  Class {cls}: {count}")
 
-    print("=" * 50)
+    print("=" * 60)
+    print(f"CSV log: {RESULTS_CSV}")
+    print(f"Gender stats file: {GENDER_COUNT_FILE}")
+    print(f"Processed files moved to: {PROCESSED_DIR}")
 
-    try:
-        with open(COUNT_FILE, 'w') as f:
-            json.dump({
-                'date': current_date,
-                'female_total': total_female_24h,
-                'male_total': total_male_24h,
-                'unknown_total': total_unknown_24h,
-                'error_total': total_error_24h,
-                'last_update': datetime.now().isoformat(),
-                'reset_time': f"{RESET_HOUR:02d}:{RESET_MINUTE:02d}",
-                'reset_note': f"Count resets daily at {RESET_HOUR:02d}:{RESET_MINUTE:02d} AM"
-            }, f)
-        print(f"Saved 24h running totals to {COUNT_FILE}")
-    except Exception as e:
-        print(f"Warning: Could not save running totals: {e}")
-
-    if INFLUX_CONFIG['enabled']:
-        stats = {
-            'total': total_all_24h,
-            'female': total_female_24h,
-            'male': total_male_24h,
-            'unknown': total_unknown_24h,
-            'error': total_error_24h,
-            'female_pct': female_pct_24h,
-            'male_pct': male_pct_24h,
-            'model': model_name
-        }
-
-        print("\nSending 24-hour running totals to InfluxDB...")
-        if send_to_influxdb(stats):
-            print("Data sent to InfluxDB successfully!")
-            print(f"  Database: {INFLUX_CONFIG['database']}")
-            print(f"  Total mosquitoes last 24h: {total_all_24h}")
-            print(f"  (Count resets at {RESET_HOUR:02d}:{RESET_MINUTE:02d} AM)")
-        else:
-            print("Failed to send to InfluxDB")
+    if influx_client:
+        influx_client.close()
+        print("InfluxDB connection closed")
+    print("=" * 60)
 
 
 if __name__ == "__main__":
     main()
-
 
 
 #!/usr/bin/env python3 (DRAFT)

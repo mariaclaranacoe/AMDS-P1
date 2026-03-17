@@ -56,7 +56,7 @@ GENDER_COUNT_FILE = os.path.join(BASE_DIR, "gender_24h_stats.json")
 RESULTS_CSV = os.path.join(RESULTS_DIR, "classification_log.csv")
 
 RESET_HOUR = 7
-RESET_MINUTE = 7
+RESET_MINUTE = 0
 
 # ============================================
 # INFLUXDB CONFIGURATION

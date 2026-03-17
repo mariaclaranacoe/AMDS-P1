@@ -1,5 +1,6 @@
-const influxData = $input.item.json;
+const items = $input.all();
 
+// Default result
 let result = {
   totalMosquitos: 0,
   femaleCount: 0,
@@ -8,47 +9,53 @@ let result = {
   malePercentage: 0,
   unknownCount: 0,
   errorCount: 0,
-  device: 'raspberry_pi_4',
-  location: 'mosquito_listener',
-  model: 'unknown',
-  timestamp: null
+  avgConfidence: 0,
+  device: 'ESP32 Trap 1',
+  location: 'Community Park',
+  timestamp: new Date().toLocaleString('en-US', { timeZone: 'Asia/Manila' })
 };
 
-// Check if we have valid InfluxDB response
-if (influxData?.results?.[0]?.series?.[0]) {
-  const series = influxData.results[0].series[0];
-  const columns = series.columns;
-  const allValues = series.values || [];
-  
-  // Take ONLY the MOST RECENT data point
-  const latestValues = allValues[allValues.length - 1] || [];
-  
-  // Find column indices
-  const totalIdx = columns.indexOf('total_files');
-  const femaleIdx = columns.indexOf('female_count');
-  const maleIdx = columns.indexOf('male_count');
-  const unknownIdx = columns.indexOf('unknown_count');
-  const errorIdx = columns.indexOf('error_count');
-  const femalePctIdx = columns.indexOf('female_percentage');
-  const malePctIdx = columns.indexOf('male_percentage');
-  const deviceIdx = columns.indexOf('device');
-  const locationIdx = columns.indexOf('location');
-  const modelIdx = columns.indexOf('model');
-  const timeIdx = columns.indexOf('time');
-  
-  result = {
-    totalMosquitos: Number(latestValues[totalIdx]) || 0,
-    femaleCount: Number(latestValues[femaleIdx]) || 0,
-    femalePercentage: Number(latestValues[femalePctIdx]) || 0,
-    maleCount: Number(latestValues[maleIdx]) || 0,
-    malePercentage: Number(latestValues[malePctIdx]) || 0,
-    unknownCount: Number(latestValues[unknownIdx]) || 0,
-    errorCount: Number(latestValues[errorIdx]) || 0,
-    device: latestValues[deviceIdx] || 'raspberry_pi_4',
-    location: latestValues[locationIdx] || 'mosquito_listener',
-    model: latestValues[modelIdx] || 'unknown',
-    timestamp: latestValues[timeIdx] || new Date().toISOString()
-  };
+// Look through all merged items and detect which response is which
+for (const item of items) {
+  const data = item.json;
+
+  if (!data?.results?.[0]?.series?.[0]) continue;
+
+  const series = data.results[0].series[0];
+  const columns = series.columns || [];
+  const values = series.values?.[0] || [];
+
+  // Gender stats response
+  if (columns.includes('female_total') || columns.includes('male_total')) {
+    result.femaleCount = parseInt(values[columns.indexOf('female_total')]) || 0;
+    result.maleCount = parseInt(values[columns.indexOf('male_total')]) || 0;
+    result.unknownCount = parseInt(values[columns.indexOf('unknown_total')]) || 0;
+    result.errorCount = parseInt(values[columns.indexOf('error_total')]) || 0;
+  }
+
+  // Total count response
+  if (columns.includes('total_count')) {
+    result.totalMosquitos = parseInt(values[columns.indexOf('total_count')]) || 0;
+  }
+
+  // Confidence response
+  if (columns.includes('avg_confidence')) {
+    const conf = parseFloat(values[columns.indexOf('avg_confidence')]);
+    result.avgConfidence = isNaN(conf) ? 0 : Number((conf * 100).toFixed(1));
+  }
+}
+
+// Calculate percentages
+if (result.totalMosquitos > 0) {
+  result.femalePercentage = Number(((result.femaleCount / result.totalMosquitos) * 100).toFixed(1));
+  result.malePercentage = Number(((result.maleCount / result.totalMosquitos) * 100).toFixed(1));
+} else {
+  const classifiedTotal = result.femaleCount + result.maleCount + result.unknownCount;
+  if (classifiedTotal > 0) {
+    result.totalMosquitos = classifiedTotal;
+    result.femalePercentage = Number(((result.femaleCount / classifiedTotal) * 100).toFixed(1));
+    result.malePercentage = Number(((result.maleCount / classifiedTotal) * 100).toFixed(1));
+  }
 }
 
 return [{ json: result }];

@@ -69,7 +69,7 @@ const unsigned long MQTT_RECONNECT_INTERVAL_MS = 5000;
 
 // DAILY RESET
 const int RESET_HOUR = 7;
-const int RESET_MINUTE = 7;
+const int RESET_MINUTE = 0;
 String lastResetDate = "";
 
 // I2S MIC SETTINGS

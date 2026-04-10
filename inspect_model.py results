@@ -1,0 +1,120 @@
+(mosquito_ai) teasis@IOTserver:~/mosquito_listener $ cat inspect_model.py
+#!/usr/bin/env python3
+import h5py
+from tensorflow.keras.models import load_model
+
+MODEL_PATH = "./models/cnn_model_min_val_round10.h5"
+
+print("=" * 60)
+print("INSPECTING MODEL")
+print("=" * 60)
+
+# Load with Keras
+try:
+    model = load_model(MODEL_PATH, compile=False)
+    print("Model loaded successfully.\n")
+
+    print("--- Model Summary ---")
+    model.summary()
+
+    print("\n--- Basic Info ---")
+    print("Input shape :", model.input_shape)
+    print("Output shape:", model.output_shape)
+    print("Number of layers:", len(model.layers))
+
+    output_layer = model.layers[-1]
+    print("\n--- Output Layer ---")
+    print("Layer name:", output_layer.name)
+    print("Layer type:", type(output_layer).__name__)
+
+    if hasattr(output_layer, "units"):
+        print("Number of output units:", output_layer.units)
+
+    print("\n--- Model Config Keys ---")
+    print(model.get_config().keys())
+
+except Exception as e:
+    print(f"Error loading model with Keras: {e}")
+
+print("\n" + "=" * 60)
+print("H5 FILE INSPECTION")
+print("=" * 60)
+
+try:
+    with h5py.File(MODEL_PATH, "r") as f:
+        print("\n--- Root Keys ---")
+        for key in f.keys():
+            print(key)
+
+        print("\n--- Root Attributes ---")
+        for key, value in f.attrs.items():
+            try:
+                preview = value[:200] if isinstance(value, (bytes, str)) else str(value)[:200]
+                print(f"{key}: {preview}")
+            except Exception:
+                print(f"{key}: <unprintable>")
+
+except Exception as e:
+    print(f"Error inspecting H5 file: {e}")
+(mosquito_ai) teasis@IOTserver:~/mosquito_listener $ python inspect_model.py
+============================================================
+INSPECTING MODEL
+============================================================
+/home/teasis/mosquito_listener/mosquito_ai/lib/python3.13/site-packages/keras/src/layers/convolutional/base_conv.py:113: UserWarning: Do not pass an `input_shape`/`input_dim` argument to a layer. When using Sequential models, prefer using an `Input(shape)` object as the first layer in the model instead.
+  super().__init__(activity_regularizer=activity_regularizer, **kwargs)
+Model loaded successfully.
+
+--- Model Summary ---
+Model: "sequential"
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━┓
+┃ Layer (type)                         ┃ Output Shape                ┃         Param # ┃
+┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━┩
+│ conv1d (Conv1D)                      │ (None, 513, 32)             │          11,232 │
+├──────────────────────────────────────┼─────────────────────────────┼─────────────────┤
+│ max_pooling1d (MaxPooling1D)         │ (None, 128, 32)             │               0 │
+├──────────────────────────────────────┼─────────────────────────────┼─────────────────┤
+│ conv1d_1 (Conv1D)                    │ (None, 29, 32)              │         102,432 │
+├──────────────────────────────────────┼─────────────────────────────┼─────────────────┤
+│ max_pooling1d_1 (MaxPooling1D)       │ (None, 9, 32)               │               0 │
+├──────────────────────────────────────┼─────────────────────────────┼─────────────────┤
+│ flatten (Flatten)                    │ (None, 288)                 │               0 │
+├──────────────────────────────────────┼─────────────────────────────┼─────────────────┤
+│ dropout (Dropout)                    │ (None, 288)                 │               0 │
+├──────────────────────────────────────┼─────────────────────────────┼─────────────────┤
+│ dense (Dense)                        │ (None, 256)                 │          73,984 │
+├──────────────────────────────────────┼─────────────────────────────┼─────────────────┤
+│ dense_1 (Dense)                      │ (None, 128)                 │          32,896 │
+├──────────────────────────────────────┼─────────────────────────────┼─────────────────┤
+│ dense_2 (Dense)                      │ (None, 8)                   │           1,032 │
+└──────────────────────────────────────┴─────────────────────────────┴─────────────────┘
+ Total params: 221,576 (865.53 KB)
+ Trainable params: 221,576 (865.53 KB)
+ Non-trainable params: 0 (0.00 B)
+
+--- Basic Info ---
+Input shape : (None, 2400, 1)
+Output shape: (None, 8)
+Number of layers: 9
+
+--- Output Layer ---
+Layer name: dense_2
+Layer type: Dense
+Number of output units: 8
+
+--- Model Config Keys ---
+dict_keys(['name', 'trainable', 'dtype', 'layers', 'build_input_shape'])
+
+============================================================
+H5 FILE INSPECTION
+============================================================
+
+--- Root Keys ---
+model_weights
+optimizer_weights
+
+--- Root Attributes ---
+backend: tensorflow
+keras_version: 2.4.0
+model_config: {"class_name": "Sequential", "config": {"name": "sequential", "layers": [{"class_name": "InputLayer", "config": {"batch_input_shape": [null, 2400, 1], "dtype": "float32", "sparse": false, "ragged": fa
+training_config: {"loss": "categorical_crossentropy", "metrics": [[{"class_name": "MeanMetricWrapper", "config": {"name": "accuracy", "dtype": "float32", "fn": "categorical_accuracy"}}]], "weighted_metrics": null, "lo
+(mosquito_ai) teasis@IOTserver:~/mosquito_listener $

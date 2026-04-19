@@ -7,14 +7,15 @@
 #include <PubSubClient.h>
 #include <Preferences.h>
 #include <ArduinoJson.h>
+#include <algorithm> 
 
 // WIFI + SERVER
-const char* ssid = "SBG6700AC-69159";
-const char* password = "fb13122db2";
-const char* serverName = "http://192.168.0.24:5000/upload_audio";
+const char* ssid = "KAYA AGRI, POULTRY & PET SUPPLY";
+const char* password = "SuperB@ngadF3ynManK@ya";
+const char* serverName = "http://192.168.5.200:5000/upload_audio";
 
 // MQTT
-const char* mqttServer = "192.168.0.24";
+const char* mqttServer = "192.168.5.200";
 const int mqttPort = 1883;
 const char* mqttClientId = "esp32_mosquito_trap_1";
 const char* mqttUser = "teasis";
@@ -34,38 +35,47 @@ const int NUM_SENSORS = 6;
 const int sensorPins[NUM_SENSORS] = {36, 39, 34, 35, 32, 33};
 
 int baseline[NUM_SENSORS] = {0};
-int prevAnalog[NUM_SENSORS] = {0};
 int currentAnalog[NUM_SENSORS] = {0};
 
-int detectionCount = 0;
-bool anyDetection = false;
-bool isRecording = false;
+// *** MOVING AVERAGE FILTER - Reduces electrical noise ***
+const int FILTER_WINDOW = 5;  // Average 5 readings
+int sensorHistory[NUM_SENSORS][5] = {{0}};
+int historyIndex[NUM_SENSORS] = {0};
 
-const float REDUCTION_PERCENT = 12.0;
-
-// Calibration / smoothing
-const int BASELINE_SAMPLES = 20;
-const int SENSOR_SETTLE_DELAY_MS = 30;
-const int BASELINE_TRACK_LIMIT = 100;
-
-// Trigger stability
-const int REQUIRED_CONSECUTIVE_HITS = 2;
+// *** CONSECUTIVE HIT DETECTION - Confirms real events ***
+const int REQUIRED_CONSECUTIVE = 2;  // Need 2 readings in a row
 int hitCount[NUM_SENSORS] = {0};
-bool sensorBlocked[NUM_SENSORS] = {false};
 
-// Cooldown so one mosquito does not create many recordings
+// Detection settings
+const float DROP_THRESHOLD_PERCENT = 8;  // 8% drop triggers detection
+const int DEBOUNCE_MS = 500;              // Prevents multiple triggers
 unsigned long lastTriggerTime = 0;
-const unsigned long TRIGGER_COOLDOWN_MS = 2500;
+
+// *** NEW: Post-detection recovery time to prevent false second detection ***
+unsigned long lastDetectionEndTime = 0;
+const unsigned long POST_DETECTION_COOLDOWN = 1500;  // Wait 1.5 seconds after each detection
+
+// Calibration settings
+const int BASELINE_SAMPLES = 50;
+const int SENSOR_SETTLE_DELAY_MS = 10;
+
+// Tracking variables
+int detectionCount = 0;
+bool isRecording = false;
 
 // Loop timing
 unsigned long lastRead = 0;
-const unsigned long SENSOR_READ_INTERVAL_MS = 40;
+const unsigned long SENSOR_READ_INTERVAL_MS = 2;  // 2ms = 500Hz
 
 unsigned long lastDisplay = 0;
-const unsigned long DISPLAY_INTERVAL_MS = 2000;
+const unsigned long DISPLAY_INTERVAL_MS = 500;
 
 unsigned long lastMQTTReconnectAttempt = 0;
 const unsigned long MQTT_RECONNECT_INTERVAL_MS = 5000;
+
+// *** NEW: MQTT Heartbeat variables ***
+const unsigned long MQTT_HEARTBEAT_INTERVAL_MS = 30000;  // 30 seconds
+unsigned long lastMQTTHeartbeat = 0;
 
 // DAILY RESET
 const int RESET_HOUR = 7;
@@ -103,6 +113,7 @@ void i2sInit();
 void initLegacyADC();
 adc1_channel_t pinToAdc1Channel(int pin);
 int readSensorRaw(int pin);
+int readSensorFiltered(int sensorIndex);
 
 void calibrateSensors();
 bool beamBroken();
@@ -115,6 +126,7 @@ void writeWavHeader(File &file, uint32_t dataSize);
 void connectToMQTT();
 void publishSensorData(const char* reason = nullptr, int oldCount = -1);
 void checkDailyReset();
+void resetDetectionCount();
 
 void loadPersistentState();
 void savePersistentCount();
@@ -135,16 +147,30 @@ adc1_channel_t pinToAdc1Channel(int pin) {
 
 void initLegacyADC() {
   adc1_config_width(ADC_WIDTH_BIT_12);
-
   for (int i = 0; i < NUM_SENSORS; i++) {
     adc1_config_channel_atten(pinToAdc1Channel(sensorPins[i]), ADC_ATTEN_DB_11);
   }
-
   Serial.println("Legacy ADC1 initialized");
 }
 
 int readSensorRaw(int pin) {
   return adc1_get_raw(pinToAdc1Channel(pin));
+}
+
+// *** MOVING AVERAGE FILTER FUNCTION ***
+int readSensorFiltered(int sensorIndex) {
+    int raw = readSensorRaw(sensorPins[sensorIndex]);
+    
+    // Store in circular buffer
+    sensorHistory[sensorIndex][historyIndex[sensorIndex]] = raw;
+    historyIndex[sensorIndex] = (historyIndex[sensorIndex] + 1) % FILTER_WINDOW;
+    
+    // Calculate average
+    long sum = 0;
+    for(int i = 0; i < FILTER_WINDOW; i++) {
+        sum += sensorHistory[sensorIndex][i];
+    }
+    return sum / FILTER_WINDOW;
 }
 
 // SETUP
@@ -155,29 +181,37 @@ void setup() {
   Serial.println();
   Serial.println("=== MOSQUITO TRAP SENSOR + AUDIO RECORDER + MQTT ===");
   Serial.println("6 break-beam sensors + INMP441 + HTTP upload");
-  Serial.print("Audio: ");
-  Serial.print(SAMPLE_RATE);
-  Serial.print(" Hz, ");
-  Serial.print(RECORD_TIME_SEC);
-  Serial.println(" sec WAV");
   Serial.print("Detection threshold: ");
-  Serial.print(REDUCTION_PERCENT);
-  Serial.println("% light reduction");
+  Serial.print(DROP_THRESHOLD_PERCENT);
+  Serial.println("% drop from baseline");
+  Serial.print("Required consecutive hits: ");
+  Serial.println(REQUIRED_CONSECUTIVE);
+  Serial.print("Filter window: ");
+  Serial.println(FILTER_WINDOW);
+  Serial.print("Sensor read interval: ");
+  Serial.print(SENSOR_READ_INTERVAL_MS);
+  Serial.println(" ms (500Hz sampling)");
+  Serial.print("Post-detection cooldown: ");
+  Serial.print(POST_DETECTION_COOLDOWN);
+  Serial.println(" ms");
   Serial.print("Daily reset time: ");
   Serial.print(RESET_HOUR);
   Serial.print(":");
   if (RESET_MINUTE < 10) Serial.print("0");
   Serial.println(RESET_MINUTE);
+  Serial.println("Commands: 'c' = calibrate, 'r' = reset count");
   Serial.println("====================================================");
 
   initLegacyADC();
 
+  // Initialize sensor history buffers
   for (int i = 0; i < NUM_SENSORS; i++) {
     pinMode(sensorPins[i], INPUT);
-    prevAnalog[i] = readSensorRaw(sensorPins[i]);
-    currentAnalog[i] = prevAnalog[i];
+    currentAnalog[i] = 0;
     hitCount[i] = 0;
-    sensorBlocked[i] = false;
+    for (int j = 0; j < FILTER_WINDOW; j++) {
+      sensorHistory[i][j] = 0;
+    }
   }
 
   preferences.begin("mosqtrap", false);
@@ -198,20 +232,54 @@ void setup() {
     checkDailyReset();
   }
 
-  // Publish startup data
   publishSensorData("startup");
 
   Serial.println("System ready.");
-  Serial.println("Press 'c' in Serial Monitor to recalibrate sensors.");
+  Serial.println("Press 'c' to recalibrate sensors, 'r' to reset count");
+}
+
+// Reset detection count function
+void resetDetectionCount() {
+  int oldCount = detectionCount;
+  detectionCount = 0;
+  savePersistentCount();
+  
+  Serial.println();
+  Serial.println("=========================================");
+  Serial.print("COUNT RESET: ");
+  Serial.print(oldCount);
+  Serial.println(" -> 0");
+  Serial.println("=========================================");
+  
+  publishSensorData("manual_reset", oldCount);
 }
 
 // LOOP
 void loop() {
   unsigned long now = millis();
 
+  // *** IMPROVED: Better WiFi reconnection ***
   if (WiFi.status() != WL_CONNECTED) {
-    connectToWiFi();
-    syncTime();
+    Serial.println("WiFi lost, reconnecting...");
+    WiFi.disconnect(true);  // Clear existing connection
+    delay(100);
+    WiFi.begin(ssid, password);
+    
+    int attempts = 0;
+    while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+      delay(500);
+      Serial.print(".");
+      attempts++;
+    }
+    
+    if (WiFi.status() == WL_CONNECTED) {
+      Serial.println("\nWiFi reconnected!");
+      Serial.print("IP: ");
+      Serial.println(WiFi.localIP());
+      syncTime();  // Critical: resync time after reconnect
+    } else {
+      Serial.println("\nWiFi reconnection failed");
+    }
   }
 
   if (!mqttClient.connected()) {
@@ -221,21 +289,45 @@ void loop() {
     }
   } else {
     mqttClient.loop();
+    
+    // *** NEW: MQTT Heartbeat to keep connection alive ***
+    if (now - lastMQTTHeartbeat >= MQTT_HEARTBEAT_INTERVAL_MS) {
+      lastMQTTHeartbeat = now;
+      // Send lightweight keep-alive message
+      String heartbeat = "{\"type\":\"ping\",\"ts\":\"" + getDateTime() + "\"}";
+      if (mqttClient.publish(topic_data, heartbeat.c_str(), false)) {
+        Serial.println("MQTT heartbeat sent");
+      } else {
+        Serial.println("MQTT heartbeat failed");
+      }
+    }
   }
 
   if (timeSynced) {
     checkDailyReset();
   }
 
+  // High-speed sensor detection
   if (now - lastRead >= SENSOR_READ_INTERVAL_MS) {
     bool triggered = beamBroken();
 
-    if (!isRecording && triggered && (now - lastTriggerTime > TRIGGER_COOLDOWN_MS)) {
+    // *** MODIFIED: Added post-detection cooldown check ***
+    if (!isRecording && triggered && (now - lastTriggerTime > DEBOUNCE_MS)) {
+      
+      // Check if we're still in recovery period from last detection
+      if (now - lastDetectionEndTime < POST_DETECTION_COOLDOWN) {
+        // Skip this detection - sensor still recovering
+        Serial.print("Waiting for sensor recovery (");
+        Serial.print(now - lastDetectionEndTime);
+        Serial.println("ms since last detection)");
+        lastRead = now;
+        return;  // Skip this detection
+      }
+      
       lastTriggerTime = now;
       detectionCount++;
       savePersistentCount();
-      
-      // Publish detection data
+
       publishSensorData("beam_break");
 
       isRecording = true;
@@ -257,15 +349,18 @@ void loop() {
     lastRead = now;
   }
 
-  if (anyDetection || (now - lastDisplay >= DISPLAY_INTERVAL_MS)) {
+  if (now - lastDisplay >= DISPLAY_INTERVAL_MS) {
     printSensorStatus();
     lastDisplay = now;
   }
 
+  // Serial command handling
   if (Serial.available()) {
     char c = Serial.read();
     if (c == 'c' || c == 'C') {
       calibrateSensors();
+    } else if (c == 'r' || c == 'R') {
+      resetDetectionCount();
     }
   }
 }
@@ -312,7 +407,9 @@ void connectToMQTT() {
   if (ok) {
     Serial.println("connected");
     
-    // Publish online status
+    // Reset heartbeat timer on successful connection
+    lastMQTTHeartbeat = millis();
+
     String onlinePayload = "{";
     onlinePayload += "\"device\":\"esp32_trap_1\",";
     onlinePayload += "\"status\":\"online\",";
@@ -326,7 +423,6 @@ void connectToMQTT() {
   }
 }
 
-// ============= UPDATED FUNCTION TO MATCH NODE-RED EXPECTATIONS =============
 void publishSensorData(const char* reason, int oldCount) {
   if (!mqttClient.connected()) {
     Serial.println("MQTT not connected, data not published");
@@ -335,46 +431,35 @@ void publishSensorData(const char* reason, int oldCount) {
 
   StaticJsonDocument<512> jsonDoc;
 
-  // Add timestamp
   jsonDoc["datetime"] = getDateTime();
-  
-  // Add all 6 sensor values (as numbers, not strings)
-  jsonDoc["s1"] = readSensorRaw(sensorPins[0]);  // PIN 36
-  jsonDoc["s2"] = readSensorRaw(sensorPins[1]);  // PIN 39
-  jsonDoc["s3"] = readSensorRaw(sensorPins[2]);  // PIN 34
-  jsonDoc["s4"] = readSensorRaw(sensorPins[3]);  // PIN 35
-  jsonDoc["s5"] = readSensorRaw(sensorPins[4]);  // PIN 32
-  jsonDoc["s6"] = readSensorRaw(sensorPins[5]);  // PIN 33
-  
-  // Add count (this will become total_count in Node-RED)
+  jsonDoc["s1"] = currentAnalog[0];
+  jsonDoc["s2"] = currentAnalog[1];
+  jsonDoc["s3"] = currentAnalog[2];
+  jsonDoc["s4"] = currentAnalog[3];
+  jsonDoc["s5"] = currentAnalog[4];
+  jsonDoc["s6"] = currentAnalog[5];
   jsonDoc["count"] = detectionCount;
-  
-  // Add event info if provided
+
   if (reason != nullptr) {
     jsonDoc["event"] = reason;
   }
-  
-  // Add reset info if provided
+
   if (oldCount >= 0) {
     jsonDoc["old_count"] = oldCount;
   }
 
-  // Note: device and location are NOT included in the JSON
-  // because your Node-RED function doesn't expect them
-
   char buffer[512];
   size_t n = serializeJson(jsonDoc, buffer);
-  
+
   bool ok = mqttClient.publish(topic_data, (uint8_t*)buffer, n, reason == nullptr ? false : true);
 
   if (ok) {
-    Serial.print("📡 Published to MQTT: ");
+    Serial.print("Published to MQTT: ");
     Serial.println(buffer);
   } else {
     Serial.println("Failed to publish to MQTT");
   }
 }
-// ===========================================================================
 
 // TIME
 void syncTime() {
@@ -431,10 +516,7 @@ void checkDailyReset() {
     }
   }
 
-  bool resetTimeReached =
-    (currentHour > RESET_HOUR) ||
-    (currentHour == RESET_HOUR && currentMinute >= RESET_MINUTE);
-
+  bool resetTimeReached = (currentHour > RESET_HOUR) || (currentHour == RESET_HOUR && currentMinute >= RESET_MINUTE);
   bool alreadyResetToday = (lastResetDate == today);
 
   if (resetTimeReached && !alreadyResetToday) {
@@ -451,7 +533,6 @@ void checkDailyReset() {
     lastResetDate = today;
     savePersistentResetDate();
 
-    // Publish reset event with old count
     publishSensorData("daily_reset", oldCount);
 
     Serial.println("Count reset to 0.");
@@ -497,118 +578,121 @@ void SPIFFSInit() {
 
 // I2S INIT
 void i2sInit() {
-  i2s_config_t i2s_config = {
-    .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX),
-    .sample_rate = SAMPLE_RATE,
-    .bits_per_sample = I2S_BITS_PER_SAMPLE_32BIT,
-    .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,
-    .communication_format = I2S_COMM_FORMAT_I2S,
-    .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
-    .dma_buf_count = 8,
-    .dma_buf_len = 256,
-    .use_apll = false,
-    .tx_desc_auto_clear = false,
-    .fixed_mclk = 0
-  };
+    i2s_config_t i2s_config = {
+        .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX),
+        .sample_rate = SAMPLE_RATE,
+        .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,
+        .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,
+        .communication_format = I2S_COMM_FORMAT_I2S,
+        .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
+        .dma_buf_count = 8,
+        .dma_buf_len = 512,
+        .use_apll = true,
+        .tx_desc_auto_clear = false,
+        .fixed_mclk = 0
+    };
 
-  i2s_pin_config_t pin_config = {
-    .bck_io_num = I2S_SCK,
-    .ws_io_num = I2S_WS,
-    .data_out_num = -1,
-    .data_in_num = I2S_SD
-  };
+    i2s_pin_config_t pin_config = {
+        .bck_io_num = I2S_SCK,
+        .ws_io_num = I2S_WS,
+        .data_out_num = -1,
+        .data_in_num = I2S_SD
+    };
 
-  i2s_driver_install(I2S_PORT, &i2s_config, 0, NULL);
-  i2s_set_pin(I2S_PORT, &pin_config);
-  i2s_zero_dma_buffer(I2S_PORT);
-
-  Serial.println("INMP441 I2S microphone initialized");
+    i2s_driver_install(I2S_PORT, &i2s_config, 0, NULL);
+    i2s_set_pin(I2S_PORT, &pin_config);
+    i2s_zero_dma_buffer(I2S_PORT);
+    
+    Serial.println("INMP441 I2S microphone initialized");
 }
 
-// SENSOR CALIBRATION
+// CALIBRATION FUNCTION
 void calibrateSensors() {
   Serial.println();
-  Serial.println("=== CALIBRATING SENSORS ===");
-  Serial.println("Make sure all beams are CLEAR...");
-
-  for (int i = 0; i < NUM_SENSORS; i++) {
+  Serial.println("=========================================");
+  Serial.println("CALIBRATING SENSORS - Keep beams CLEAR!");
+  Serial.println("=========================================");
+  
+  for(int i = 0; i < NUM_SENSORS; i++) {
     long sum = 0;
-
-    for (int j = 0; j < BASELINE_SAMPLES; j++) {
-      sum += readSensorRaw(sensorPins[i]);
+    Serial.print("Calibrating sensor ");
+    Serial.print(i + 1);
+    Serial.print(" (pin ");
+    Serial.print(sensorPins[i]);
+    Serial.print(")... ");
+    
+    for(int j = 0; j < BASELINE_SAMPLES; j++) {
+      int val = readSensorRaw(sensorPins[i]);
+      sum += val;
+      // Also initialize filter history
+      for(int k = 0; k < FILTER_WINDOW; k++) {
+        sensorHistory[i][k] = val;
+      }
       delay(SENSOR_SETTLE_DELAY_MS);
     }
-
+    
     baseline[i] = sum / BASELINE_SAMPLES;
-    prevAnalog[i] = baseline[i];
-    currentAnalog[i] = baseline[i];
     hitCount[i] = 0;
-    sensorBlocked[i] = false;
-
-    Serial.print("Sensor ");
-    Serial.print(i + 1);
-    Serial.print(" (PIN ");
-    Serial.print(sensorPins[i]);
-    Serial.print(") baseline: ");
+    Serial.print("Baseline: ");
     Serial.println(baseline[i]);
   }
-
-  Serial.println("=== CALIBRATION DONE ===");
+  
+  Serial.println("=========================================");
+  Serial.println("CALIBRATION COMPLETE!");
+  Serial.print("Detection threshold: ");
+  Serial.print(DROP_THRESHOLD_PERCENT);
+  Serial.println("% drop");
+  Serial.print("Required consecutive hits: ");
+  Serial.println(REQUIRED_CONSECUTIVE);
+  Serial.println("=========================================");
   Serial.println();
 }
 
-// BEAM DETECTION
+// *** DETECTION FUNCTION with Filtering and Consecutive Hits ***
 bool beamBroken() {
-  anyDetection = false;
-  bool triggered = false;
-
-  for (int i = 0; i < NUM_SENSORS; i++) {
-    int current = readSensorRaw(sensorPins[i]);
-    currentAnalog[i] = current;
-
-    float reduction = 0.0;
-    if (baseline[i] > 0) {
-      reduction = 100.0 * (baseline[i] - current) / baseline[i];
+  bool mosquitoDetected = false;
+  int detectedSensor = -1;
+  float highestDrop = 0;
+  
+  for(int i = 0; i < NUM_SENSORS; i++) {
+    // Use filtered reading to reduce noise
+    int currentValue = readSensorFiltered(i);
+    currentAnalog[i] = currentValue;
+    float dropPercent = 0.0;
+    
+    if(baseline[i] > 0) {
+      dropPercent = 100.0 * (baseline[i] - currentValue) / baseline[i];
+      if(dropPercent < 0) dropPercent = 0;
     }
-
-    bool beam_drop = (reduction > REDUCTION_PERCENT);
-    bool beam_clear = (reduction < (REDUCTION_PERCENT * 0.5));
-
-    if (beam_drop) {
+    
+    // Consecutive hit counting
+    if(dropPercent >= DROP_THRESHOLD_PERCENT) {
       hitCount[i]++;
+      // Cap the hit count to prevent overflow
+      if(hitCount[i] > REQUIRED_CONSECUTIVE + 2) {
+        hitCount[i] = REQUIRED_CONSECUTIVE;
+      }
     } else {
       hitCount[i] = 0;
     }
-
-    if (!sensorBlocked[i] && hitCount[i] >= REQUIRED_CONSECUTIVE_HITS) {
-      sensorBlocked[i] = true;
-      anyDetection = true;
-      triggered = true;
-
-      Serial.print(">>> Sensor ");
-      Serial.print(i + 1);
-      Serial.print(" triggered | value=");
-      Serial.print(current);
-      Serial.print(" | baseline=");
-      Serial.print(baseline[i]);
-      Serial.print(" | reduction=");
-      Serial.print(reduction, 1);
-      Serial.println("%");
+    
+    // Trigger only when we have enough consecutive hits
+    if(hitCount[i] >= REQUIRED_CONSECUTIVE) {
+      mosquitoDetected = true;
+      detectedSensor = i + 1;
+      if(dropPercent > highestDrop) highestDrop = dropPercent;
     }
-
-    if (sensorBlocked[i] && beam_clear) {
-      sensorBlocked[i] = false;
-      hitCount[i] = 0;
-    }
-
-    if (!sensorBlocked[i] && abs(current - baseline[i]) < BASELINE_TRACK_LIMIT) {
-      baseline[i] = (baseline[i] * 0.99) + (current * 0.01);
-    }
-
-    prevAnalog[i] = current;
   }
-
-  return triggered;
+  
+  if(mosquitoDetected) {
+    Serial.print("Sensor ");
+    Serial.print(detectedSensor);
+    Serial.print(" triggered! (Drop: ");
+    Serial.print(highestDrop, 1);
+    Serial.println("%)");
+  }
+  
+  return mosquitoDetected;
 }
 
 // SERIAL STATUS DISPLAY
@@ -619,21 +703,20 @@ void printSensorStatus() {
 
   for (int i = 0; i < NUM_SENSORS; i++) {
     int val = currentAnalog[i];
-    int threshold = baseline[i] * (100.0 - REDUCTION_PERCENT) / 100.0;
+    float drop = 100.0 * (baseline[i] - val) / baseline[i];
+    if(drop < 0) drop = 0;
 
     Serial.print("S");
     Serial.print(i + 1);
     Serial.print(":");
     Serial.print(val);
+    Serial.print("(");
+    Serial.print(drop, 0);
+    Serial.print("%)");
 
-    if (sensorBlocked[i]) {
-      Serial.print("X");
-    } else if (val > (baseline[i] * 0.9)) {
-      Serial.print("O");
-    } else if (val < threshold) {
-      Serial.print("v");
-    } else {
-      Serial.print("-");
+    // Show if this sensor is in hit counting state
+    if(hitCount[i] > 0) {
+      Serial.print("*");
     }
 
     if (i < NUM_SENSORS - 1) Serial.print(" ");
@@ -649,7 +732,7 @@ void printSensorStatus() {
   Serial.println();
 }
 
-// MAIN ACTION
+// *** MODIFIED: MAIN ACTION with recovery time and hit count reset ***
 void startRecordingAndUpload() {
   if (SPIFFS.exists(filename)) {
     SPIFFS.remove(filename);
@@ -666,55 +749,62 @@ void startRecordingAndUpload() {
   }
 
   Serial.println("Upload complete.");
+  
+  // *** NEW: Mark when detection finished for recovery cooldown ***
+  lastDetectionEndTime = millis();
+  
+  // *** NEW: Reset hit counts to prevent false triggers from recovering sensor ***
+  for(int i = 0; i < NUM_SENSORS; i++) {
+    hitCount[i] = 0;
+  }
+  
+  Serial.print("Sensor recovery period started (");
+  Serial.print(POST_DETECTION_COOLDOWN);
+  Serial.println("ms cooldown)");
 }
 
 // RECORD AUDIO
 bool recordAudio() {
-  File file = SPIFFS.open(filename, FILE_WRITE);
-  if (!file) {
-    Serial.println("Failed to open WAV file for writing");
-    return false;
-  }
-
-  writeWavHeader(file, WAV_DATA_SIZE);
-
-  uint8_t i2sData[I2S_READ_LEN];
-  size_t bytesRead = 0;
-  uint32_t totalBytesWritten = 0;
-
-  Serial.println("Recording audio...");
-
-  for (int i = 0; i < 5; i++) {
-    i2s_read(I2S_PORT, i2sData, I2S_READ_LEN, &bytesRead, portMAX_DELAY);
-  }
-
-  while (totalBytesWritten < WAV_DATA_SIZE) {
-    i2s_read(I2S_PORT, i2sData, I2S_READ_LEN, &bytesRead, portMAX_DELAY);
-
-    for (size_t i = 0; i + 3 < bytesRead; i += 4) {
-      int32_t sample32 =
-        ((int32_t)i2sData[i + 3] << 24) |
-        ((int32_t)i2sData[i + 2] << 16) |
-        ((int32_t)i2sData[i + 1] << 8)  |
-        ((int32_t)i2sData[i]);
-
-      int16_t sample16 = sample32 >> 14;
-
-      if (totalBytesWritten + 2 <= WAV_DATA_SIZE) {
-        file.write((uint8_t*)&sample16, 2);
-        totalBytesWritten += 2;
-      }
+    File file = SPIFFS.open(filename, FILE_WRITE);
+    if (!file) return false;
+    
+    writeWavHeader(file, WAV_DATA_SIZE);
+    
+    int16_t i2sData[I2S_READ_LEN/2];
+    size_t bytesRead = 0;
+    uint32_t totalBytesWritten = 0;
+    
+    Serial.println("Recording audio...");
+    
+    // Flush DMA buffer
+    for (int i = 0; i < 16; i++) {
+        i2s_read(I2S_PORT, i2sData, I2S_READ_LEN, &bytesRead, portMAX_DELAY);
     }
-  }
-
-  file.seek(0);
-  writeWavHeader(file, totalBytesWritten);
-  file.close();
-
-  Serial.print("Recording finished. Bytes written: ");
-  Serial.println(totalBytesWritten);
-
-  return true;
+    
+    while (totalBytesWritten < WAV_DATA_SIZE) {
+        i2s_read(I2S_PORT, i2sData, I2S_READ_LEN, &bytesRead, portMAX_DELAY);
+        
+        // Apply gain
+        for (size_t i = 0; i < bytesRead/2; i++) {
+            int32_t amplified = (int32_t)i2sData[i] * 2;
+            if (amplified > 32767) amplified = 32767;
+            if (amplified < -32768) amplified = -32768;
+            i2sData[i] = (int16_t)amplified;
+        }
+        
+        size_t bytesToWrite = (bytesRead < (WAV_DATA_SIZE - totalBytesWritten)) ? bytesRead : (WAV_DATA_SIZE - totalBytesWritten);
+        file.write((uint8_t*)i2sData, bytesToWrite);
+        totalBytesWritten += bytesToWrite;
+    }
+    
+    file.seek(0);
+    writeWavHeader(file, totalBytesWritten);
+    file.close();
+    
+    Serial.print("Recording finished. Bytes: ");
+    Serial.println(totalBytesWritten);
+    
+    return true;
 }
 
 // UPLOAD TO SERVER
@@ -742,11 +832,9 @@ bool uploadToServer() {
   if (httpResponseCode > 0) {
     Serial.print("HTTP Response Code: ");
     Serial.println(httpResponseCode);
-
     String response = http.getString();
     Serial.print("Server response: ");
     Serial.println(response);
-
     http.end();
     return true;
   } else {

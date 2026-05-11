@@ -38,22 +38,22 @@ int baseline[NUM_SENSORS] = {0};
 int currentAnalog[NUM_SENSORS] = {0};
 
 // *** MOVING AVERAGE FILTER - Reduces electrical noise ***
-const int FILTER_WINDOW = 5;  // Average 5 readings
-int sensorHistory[NUM_SENSORS][5] = {{0}};
+const int FILTER_WINDOW = 3;  // Reduced from 5 to 3 for faster response
+int sensorHistory[NUM_SENSORS][3] = {{0}};
 int historyIndex[NUM_SENSORS] = {0};
 
-// *** CONSECUTIVE HIT DETECTION - Confirms real events ***
-const int REQUIRED_CONSECUTIVE = 2;  // Need 2 readings in a row
-int hitCount[NUM_SENSORS] = {0};
+// *** PERSISTENCE DETECTION - Confirms real events without resetting on noise ***
+int persistenceCount[NUM_SENSORS] = {0};  // Changed from hitCount
+const int REQUIRED_PERSISTENCE = 3;  // Need 3 readings out of last few
 
 // Detection settings
-const float DROP_THRESHOLD_PERCENT = 8;  // 8% drop triggers detection
-const int DEBOUNCE_MS = 500;              // Prevents multiple triggers
+const float DROP_THRESHOLD_PERCENT = 10;
+const int DEBOUNCE_MS = 500;
 unsigned long lastTriggerTime = 0;
 
 // *** NEW: Post-detection recovery time to prevent false second detection ***
 unsigned long lastDetectionEndTime = 0;
-const unsigned long POST_DETECTION_COOLDOWN = 1500;  // Wait 1.5 seconds after each detection
+const unsigned long POST_DETECTION_COOLDOWN = 1500;
 
 // Calibration settings
 const int BASELINE_SAMPLES = 50;
@@ -65,7 +65,7 @@ bool isRecording = false;
 
 // Loop timing
 unsigned long lastRead = 0;
-const unsigned long SENSOR_READ_INTERVAL_MS = 2;  // 2ms = 500Hz
+const unsigned long SENSOR_READ_INTERVAL_MS = 1;  // Changed from 2ms to 1ms (1000Hz)
 
 unsigned long lastDisplay = 0;
 const unsigned long DISPLAY_INTERVAL_MS = 500;
@@ -74,7 +74,7 @@ unsigned long lastMQTTReconnectAttempt = 0;
 const unsigned long MQTT_RECONNECT_INTERVAL_MS = 5000;
 
 // *** NEW: MQTT Heartbeat variables ***
-const unsigned long MQTT_HEARTBEAT_INTERVAL_MS = 30000;  // 30 seconds
+const unsigned long MQTT_HEARTBEAT_INTERVAL_MS = 30000;
 unsigned long lastMQTTHeartbeat = 0;
 
 // DAILY RESET
@@ -97,6 +97,11 @@ String lastResetDate = "";
 const char filename[] = "/mosquito.wav";
 const uint32_t WAV_DATA_SIZE = SAMPLE_RATE * (SAMPLE_BITS / 8) * CHANNELS * RECORD_TIME_SEC;
 
+// *** NEW: BASELINE RE-LEARNING SETTINGS ***
+const unsigned long BASELINE_RELEARN_INTERVAL_MS = 30 * 60 * 1000;
+unsigned long lastBaselineRelearn = 0;
+const int RELEARN_SAMPLES = 30;
+
 // OBJECTS
 WiFiClient espClient;
 PubSubClient mqttClient(espClient);
@@ -116,6 +121,7 @@ int readSensorRaw(int pin);
 int readSensorFiltered(int sensorIndex);
 
 void calibrateSensors();
+void relearnBaselines();
 bool beamBroken();
 void printSensorStatus();
 void startRecordingAndUpload();
@@ -173,6 +179,75 @@ int readSensorFiltered(int sensorIndex) {
     return sum / FILTER_WINDOW;
 }
 
+// *** NEW FUNCTION: Gently re-learn baselines to adapt to changing light ***
+void relearnBaselines() {
+    // Safety checks - don't re-learn if:
+    // 1. We're currently recording audio
+    // 2. A mosquito was just detected (within last 3 seconds)
+    // 3. We're in the middle of detection cooldown
+    
+    if (isRecording) {
+        Serial.println("Skipping baseline re-learn - recording in progress");
+        return;
+    }
+    
+    if (millis() - lastTriggerTime < 3000) {
+        Serial.println("Skipping baseline re-learn - recent detection");
+        return;
+    }
+    
+    if (millis() - lastDetectionEndTime < 2000) {
+        Serial.println("Skipping baseline re-learn - in cooldown period");
+        return;
+    }
+    
+    Serial.println();
+    Serial.println("=== RE-LEARNING BASELINES (Adapting to light changes) ===");
+    
+    for (int i = 0; i < NUM_SENSORS; i++) {
+        long sum = 0;
+        
+        // Take multiple samples for accurate reading
+        for (int j = 0; j < RELEARN_SAMPLES; j++) {
+            sum += readSensorFiltered(i);
+            delay(10);
+        }
+        
+        int newBaseline = sum / RELEARN_SAMPLES;
+        int oldBaseline = baseline[i];
+        
+        // Gradual change - prevent sudden jumps (90% old, 10% new)
+        baseline[i] = (oldBaseline * 9 + newBaseline) / 10;
+        
+        Serial.print("Sensor ");
+        Serial.print(i + 1);
+        Serial.print(": ");
+        Serial.print(oldBaseline);
+        Serial.print(" -> ");
+        Serial.print(baseline[i]);
+        
+        int change = abs(baseline[i] - oldBaseline);
+        float changePercent = 100.0 * change / oldBaseline;
+        Serial.print(" (");
+        Serial.print(change);
+        Serial.print(" / ");
+        Serial.print(changePercent, 1);
+        Serial.println("%)");
+        
+        // Reset persistence after re-learn
+        persistenceCount[i] = 0;
+    }
+    
+    Serial.println("=== BASELINE RE-LEARN COMPLETE ===");
+    Serial.println();
+    
+    // Publish to MQTT that baseline was updated
+    if (mqttClient.connected()) {
+        String msg = "{\"event\":\"baseline_update\",\"datetime\":\"" + getDateTime() + "\"}";
+        mqttClient.publish(topic_data, msg.c_str(), false);
+    }
+}
+
 // SETUP
 void setup() {
   Serial.begin(115200);
@@ -184,13 +259,14 @@ void setup() {
   Serial.print("Detection threshold: ");
   Serial.print(DROP_THRESHOLD_PERCENT);
   Serial.println("% drop from baseline");
-  Serial.print("Required consecutive hits: ");
-  Serial.println(REQUIRED_CONSECUTIVE);
+  Serial.print("Required persistence: ");
+  Serial.print(REQUIRED_PERSISTENCE);
+  Serial.println(" readings");
   Serial.print("Filter window: ");
   Serial.println(FILTER_WINDOW);
   Serial.print("Sensor read interval: ");
   Serial.print(SENSOR_READ_INTERVAL_MS);
-  Serial.println(" ms (500Hz sampling)");
+  Serial.println(" ms (1000Hz sampling)");
   Serial.print("Post-detection cooldown: ");
   Serial.print(POST_DETECTION_COOLDOWN);
   Serial.println(" ms");
@@ -199,7 +275,12 @@ void setup() {
   Serial.print(":");
   if (RESET_MINUTE < 10) Serial.print("0");
   Serial.println(RESET_MINUTE);
-  Serial.println("Commands: 'c' = calibrate, 'r' = reset count");
+  
+  Serial.print("Baseline re-learn interval: ");
+  Serial.print(BASELINE_RELEARN_INTERVAL_MS / 60000);
+  Serial.println(" minutes");
+  
+  Serial.println("Commands: 'c' = calibrate, 'r' = reset count, 'b' = force baseline re-learn");
   Serial.println("====================================================");
 
   initLegacyADC();
@@ -208,7 +289,7 @@ void setup() {
   for (int i = 0; i < NUM_SENSORS; i++) {
     pinMode(sensorPins[i], INPUT);
     currentAnalog[i] = 0;
-    hitCount[i] = 0;
+    persistenceCount[i] = 0;
     for (int j = 0; j < FILTER_WINDOW; j++) {
       sensorHistory[i][j] = 0;
     }
@@ -228,6 +309,8 @@ void setup() {
   i2sInit();
   calibrateSensors();
 
+  lastBaselineRelearn = millis();
+
   if (timeSynced) {
     checkDailyReset();
   }
@@ -235,7 +318,7 @@ void setup() {
   publishSensorData("startup");
 
   Serial.println("System ready.");
-  Serial.println("Press 'c' to recalibrate sensors, 'r' to reset count");
+  Serial.println("Press 'c' to recalibrate sensors, 'r' to reset count, 'b' to force baseline re-learn");
 }
 
 // Reset detection count function
@@ -258,10 +341,16 @@ void resetDetectionCount() {
 void loop() {
   unsigned long now = millis();
 
-  // *** IMPROVED: Better WiFi reconnection ***
+  // Check if it's time to re-learn baselines (every 30 minutes)
+  if (now - lastBaselineRelearn >= BASELINE_RELEARN_INTERVAL_MS) {
+    relearnBaselines();
+    lastBaselineRelearn = now;
+  }
+
+  // Improved WiFi reconnection
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("WiFi lost, reconnecting...");
-    WiFi.disconnect(true);  // Clear existing connection
+    WiFi.disconnect(true);
     delay(100);
     WiFi.begin(ssid, password);
     
@@ -276,7 +365,7 @@ void loop() {
       Serial.println("\nWiFi reconnected!");
       Serial.print("IP: ");
       Serial.println(WiFi.localIP());
-      syncTime();  // Critical: resync time after reconnect
+      syncTime();
     } else {
       Serial.println("\nWiFi reconnection failed");
     }
@@ -290,10 +379,8 @@ void loop() {
   } else {
     mqttClient.loop();
     
-    // *** NEW: MQTT Heartbeat to keep connection alive ***
     if (now - lastMQTTHeartbeat >= MQTT_HEARTBEAT_INTERVAL_MS) {
       lastMQTTHeartbeat = now;
-      // Send lightweight keep-alive message
       String heartbeat = "{\"type\":\"ping\",\"ts\":\"" + getDateTime() + "\"}";
       if (mqttClient.publish(topic_data, heartbeat.c_str(), false)) {
         Serial.println("MQTT heartbeat sent");
@@ -311,17 +398,11 @@ void loop() {
   if (now - lastRead >= SENSOR_READ_INTERVAL_MS) {
     bool triggered = beamBroken();
 
-    // *** MODIFIED: Added post-detection cooldown check ***
     if (!isRecording && triggered && (now - lastTriggerTime > DEBOUNCE_MS)) {
       
-      // Check if we're still in recovery period from last detection
       if (now - lastDetectionEndTime < POST_DETECTION_COOLDOWN) {
-        // Skip this detection - sensor still recovering
-        Serial.print("Waiting for sensor recovery (");
-        Serial.print(now - lastDetectionEndTime);
-        Serial.println("ms since last detection)");
         lastRead = now;
-        return;  // Skip this detection
+        return;
       }
       
       lastTriggerTime = now;
@@ -361,6 +442,11 @@ void loop() {
       calibrateSensors();
     } else if (c == 'r' || c == 'R') {
       resetDetectionCount();
+    } 
+    else if (c == 'b' || c == 'B') {
+      Serial.println("Manual baseline re-learn requested...");
+      relearnBaselines();
+      lastBaselineRelearn = millis();
     }
   }
 }
@@ -407,7 +493,6 @@ void connectToMQTT() {
   if (ok) {
     Serial.println("connected");
     
-    // Reset heartbeat timer on successful connection
     lastMQTTHeartbeat = millis();
 
     String onlinePayload = "{";
@@ -624,7 +709,6 @@ void calibrateSensors() {
     for(int j = 0; j < BASELINE_SAMPLES; j++) {
       int val = readSensorRaw(sensorPins[i]);
       sum += val;
-      // Also initialize filter history
       for(int k = 0; k < FILTER_WINDOW; k++) {
         sensorHistory[i][k] = val;
       }
@@ -632,7 +716,7 @@ void calibrateSensors() {
     }
     
     baseline[i] = sum / BASELINE_SAMPLES;
-    hitCount[i] = 0;
+    persistenceCount[i] = 0;
     Serial.print("Baseline: ");
     Serial.println(baseline[i]);
   }
@@ -642,20 +726,21 @@ void calibrateSensors() {
   Serial.print("Detection threshold: ");
   Serial.print(DROP_THRESHOLD_PERCENT);
   Serial.println("% drop");
-  Serial.print("Required consecutive hits: ");
-  Serial.println(REQUIRED_CONSECUTIVE);
+  Serial.print("Required persistence: ");
+  Serial.print(REQUIRED_PERSISTENCE);
+  Serial.println(" readings");
   Serial.println("=========================================");
   Serial.println();
 }
 
-// *** DETECTION FUNCTION with Filtering and Consecutive Hits ***
+// *** FAST DETECTION FUNCTION with Persistence Counter ***
 bool beamBroken() {
   bool mosquitoDetected = false;
   int detectedSensor = -1;
   float highestDrop = 0;
   
   for(int i = 0; i < NUM_SENSORS; i++) {
-    // Use filtered reading to reduce noise
+    // Use filtered reading for stability
     int currentValue = readSensorFiltered(i);
     currentAnalog[i] = currentValue;
     float dropPercent = 0.0;
@@ -665,19 +750,20 @@ bool beamBroken() {
       if(dropPercent < 0) dropPercent = 0;
     }
     
-    // Consecutive hit counting
+    // PERSISTENCE counter - increases when beam broken, decreases slowly when not
     if(dropPercent >= DROP_THRESHOLD_PERCENT) {
-      hitCount[i]++;
-      // Cap the hit count to prevent overflow
-      if(hitCount[i] > REQUIRED_CONSECUTIVE + 2) {
-        hitCount[i] = REQUIRED_CONSECUTIVE;
-      }
+      // Beam is broken, increase persistence
+      persistenceCount[i]++;
+      if(persistenceCount[i] > 10) persistenceCount[i] = 10;  // Cap at 10
     } else {
-      hitCount[i] = 0;
+      // Beam is clear, decrease persistence slowly (not instantly!)
+      if(persistenceCount[i] > 0) {
+        persistenceCount[i]--;
+      }
     }
     
-    // Trigger only when we have enough consecutive hits
-    if(hitCount[i] >= REQUIRED_CONSECUTIVE) {
+    // Trigger when we have enough persistence (3 means beam broken for ~3-6ms)
+    if(persistenceCount[i] >= REQUIRED_PERSISTENCE) {
       mosquitoDetected = true;
       detectedSensor = i + 1;
       if(dropPercent > highestDrop) highestDrop = dropPercent;
@@ -714,9 +800,11 @@ void printSensorStatus() {
     Serial.print(drop, 0);
     Serial.print("%)");
 
-    // Show if this sensor is in hit counting state
-    if(hitCount[i] > 0) {
-      Serial.print("*");
+    // Show persistence count if active
+    if(persistenceCount[i] > 0) {
+      Serial.print("[");
+      Serial.print(persistenceCount[i]);
+      Serial.print("]");
     }
 
     if (i < NUM_SENSORS - 1) Serial.print(" ");
@@ -732,7 +820,7 @@ void printSensorStatus() {
   Serial.println();
 }
 
-// *** MODIFIED: MAIN ACTION with recovery time and hit count reset ***
+// MAIN ACTION with recovery time and persistence reset
 void startRecordingAndUpload() {
   if (SPIFFS.exists(filename)) {
     SPIFFS.remove(filename);
@@ -750,12 +838,11 @@ void startRecordingAndUpload() {
 
   Serial.println("Upload complete.");
   
-  // *** NEW: Mark when detection finished for recovery cooldown ***
   lastDetectionEndTime = millis();
   
-  // *** NEW: Reset hit counts to prevent false triggers from recovering sensor ***
+  // Reset persistence counters after detection
   for(int i = 0; i < NUM_SENSORS; i++) {
-    hitCount[i] = 0;
+    persistenceCount[i] = 0;
   }
   
   Serial.print("Sensor recovery period started (");

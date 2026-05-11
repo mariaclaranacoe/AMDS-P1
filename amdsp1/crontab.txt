@@ -1,0 +1,6 @@
+# runs class.py every hour
+0 * * * * cd /home/teasis/mosquito_listener && /home/teasis/mosquito_listener/mosquito_ai/bin/python /home/teasis/mosquito_listener/class.py >> /home/teasis/mosquito_listener/cron.log 2>&1
+# cleans the processed_recordings every 3 days at 12 midnight for storage 
+0 0 * * * find /home/teasis/mosquito_listener/data/processed_recordings -type f -mtime +3 -delete
+# deletes all .json file in classification_results if they are 3 days older
+0 0 * * * find /home/teasis/mosquito_listener/classification_results -name "*.json" -type f -mtime +3 -delete

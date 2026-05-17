@@ -9,63 +9,51 @@
 #include <ArduinoJson.h>
 #include <algorithm> 
 
-// WIFI + SERVER
 const char* ssid = "KAYA AGRI, POULTRY & PET SUPPLY";
 const char* password = "SuperB@ngadF3ynManK@ya";
 const char* serverName = "http://192.168.5.200:5000/upload_audio";
 
-// MQTT
 const char* mqttServer = "192.168.5.200";
 const int mqttPort = 1883;
 const char* mqttClientId = "esp32_mosquito_trap_1";
 const char* mqttUser = "teasis";
 const char* mqttPassword = "teasis";
 
-// Single topic for all data
 const char* topic_data = "/mosquito/data";
 
-// NTP
 const long gmtOffset_sec = 8 * 3600;
 const int daylightOffset_sec = 0;
 const char* ntpServer = "pool.ntp.org";
 bool timeSynced = false;
 
-// SENSOR SETTINGS - MATCHING ORIGINAL DRAFT
 const int NUM_SENSORS = 6;
 const int sensorPins[NUM_SENSORS] = {36, 39, 34, 35, 32, 33};
 
 int baseline[NUM_SENSORS] = {0};
 int currentAnalog[NUM_SENSORS] = {0};
 
-// *** MOVING AVERAGE FILTER - Original draft settings ***
-const int FILTER_WINDOW = 5;  // Original: 3 sample moving average
-int sensorHistory[NUM_SENSORS][5] = {{0}};  // Array size matches FILTER_WINDOW
+const int FILTER_WINDOW = 5;
+int sensorHistory[NUM_SENSORS][5] = {{0}};
 int historyIndex[NUM_SENSORS] = {0};
 
-// *** PERSISTENCE DETECTION - Original draft settings ***
 int persistenceCount[NUM_SENSORS] = {0};
-const int REQUIRED_PERSISTENCE = 1;  // Original: need 3 readings to confirm
+const int REQUIRED_PERSISTENCE = 1;
 
-// Detection settings - Original draft values
-const float DROP_THRESHOLD_PERCENT = 30;  // Original: 30% drop = beam broken
+const float DROP_THRESHOLD_PERCENT = 30;
 const int DEBOUNCE_MS = 500;
 unsigned long lastTriggerTime = 0;
 
-// Post-detection recovery time
 unsigned long lastDetectionEndTime = 0;
 const unsigned long POST_DETECTION_COOLDOWN = 1500;
 
-// Calibration settings
 const int BASELINE_SAMPLES = 100;
 const int SENSOR_SETTLE_DELAY_MS = 10;
 
-// Tracking variables
 int detectionCount = 0;
 bool isRecording = false;
 
-// Loop timing
 unsigned long lastRead = 0;
-const unsigned long SENSOR_READ_INTERVAL_MS = 20;  // Original: 10ms (100Hz sampling)
+const unsigned long SENSOR_READ_INTERVAL_MS = 20;
 
 unsigned long lastDisplay = 0;
 const unsigned long DISPLAY_INTERVAL_MS = 500;
@@ -73,16 +61,13 @@ const unsigned long DISPLAY_INTERVAL_MS = 500;
 unsigned long lastMQTTReconnectAttempt = 0;
 const unsigned long MQTT_RECONNECT_INTERVAL_MS = 5000;
 
-// MQTT Heartbeat variables
 const unsigned long MQTT_HEARTBEAT_INTERVAL_MS = 30000;
 unsigned long lastMQTTHeartbeat = 0;
 
-// DAILY RESET
 const int RESET_HOUR = 7;
 const int RESET_MINUTE = 0;
 String lastResetDate = "";
 
-// I2S MIC SETTINGS
 #define I2S_PORT I2S_NUM_0
 #define I2S_WS   16
 #define I2S_SD   17
@@ -97,17 +82,14 @@ String lastResetDate = "";
 const char filename[] = "/mosquito.wav";
 const uint32_t WAV_DATA_SIZE = SAMPLE_RATE * (SAMPLE_BITS / 8) * CHANNELS * RECORD_TIME_SEC;
 
-// BASELINE RE-LEARNING SETTINGS
 const unsigned long BASELINE_RELEARN_INTERVAL_MS = 30 * 60 * 1000;
 unsigned long lastBaselineRelearn = 0;
 const int RELEARN_SAMPLES = 30;
 
-// OBJECTS
 WiFiClient espClient;
 PubSubClient mqttClient(espClient);
 Preferences preferences;
 
-// FUNCTION DECLARATIONS
 void connectToWiFi();
 void syncTime();
 String getDateTime();
@@ -138,7 +120,6 @@ void loadPersistentState();
 void savePersistentCount();
 void savePersistentResetDate();
 
-// ADC HELPERS
 adc1_channel_t pinToAdc1Channel(int pin) {
   switch (pin) {
     case 36: return ADC1_CHANNEL_0;
@@ -163,15 +144,12 @@ int readSensorRaw(int pin) {
   return adc1_get_raw(pinToAdc1Channel(pin));
 }
 
-// *** MOVING AVERAGE FILTER FUNCTION - Original draft implementation ***
 int readSensorFiltered(int sensorIndex) {
     int raw = readSensorRaw(sensorPins[sensorIndex]);
     
-    // Store in circular buffer
     sensorHistory[sensorIndex][historyIndex[sensorIndex]] = raw;
     historyIndex[sensorIndex] = (historyIndex[sensorIndex] + 1) % FILTER_WINDOW;
     
-    // Calculate average
     long sum = 0;
     for(int i = 0; i < FILTER_WINDOW; i++) {
         sum += sensorHistory[sensorIndex][i];
@@ -179,7 +157,6 @@ int readSensorFiltered(int sensorIndex) {
     return sum / FILTER_WINDOW;
 }
 
-// Gently re-learn baselines to adapt to changing light
 void relearnBaselines() {
     if (isRecording) {
         Serial.println("Skipping baseline re-learn - recording in progress");
@@ -210,7 +187,6 @@ void relearnBaselines() {
         int newBaseline = sum / RELEARN_SAMPLES;
         int oldBaseline = baseline[i];
         
-        // Gradual change - prevent sudden jumps (90% old, 10% new)
         baseline[i] = (oldBaseline * 9 + newBaseline) / 10;
         
         Serial.print("Sensor ");
@@ -240,7 +216,6 @@ void relearnBaselines() {
     }
 }
 
-// SETUP
 void setup() {
   Serial.begin(115200);
   delay(1000);
@@ -277,7 +252,6 @@ void setup() {
 
   initLegacyADC();
 
-  // Initialize sensor history buffers
   for (int i = 0; i < NUM_SENSORS; i++) {
     pinMode(sensorPins[i], INPUT);
     currentAnalog[i] = 0;
@@ -313,7 +287,6 @@ void setup() {
   Serial.println("Press 'c' to recalibrate sensors, 'r' to reset count, 'b' to force baseline re-learn");
 }
 
-// Reset detection count function
 void resetDetectionCount() {
   int oldCount = detectionCount;
   detectionCount = 0;
@@ -329,17 +302,14 @@ void resetDetectionCount() {
   publishSensorData("manual_reset", oldCount);
 }
 
-// LOOP
 void loop() {
   unsigned long now = millis();
 
-  // Check if it's time to re-learn baselines (every 30 minutes)
   if (now - lastBaselineRelearn >= BASELINE_RELEARN_INTERVAL_MS) {
     relearnBaselines();
     lastBaselineRelearn = now;
   }
 
-  // Improved WiFi reconnection
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("WiFi lost, reconnecting...");
     WiFi.disconnect(true);
@@ -386,7 +356,6 @@ void loop() {
     checkDailyReset();
   }
 
-  // Sensor detection
   if (now - lastRead >= SENSOR_READ_INTERVAL_MS) {
     bool triggered = beamBroken();
 
@@ -427,7 +396,6 @@ void loop() {
     lastDisplay = now;
   }
 
-  // Serial command handling
   if (Serial.available()) {
     char c = Serial.read();
     if (c == 'c' || c == 'C') {
@@ -443,7 +411,6 @@ void loop() {
   }
 }
 
-// WIFI
 void connectToWiFi() {
   if (WiFi.status() == WL_CONNECTED) return;
 
@@ -461,7 +428,6 @@ void connectToWiFi() {
   Serial.println(WiFi.localIP());
 }
 
-// MQTT
 void connectToMQTT() {
   if (mqttClient.connected()) return;
 
@@ -538,7 +504,6 @@ void publishSensorData(const char* reason, int oldCount) {
   }
 }
 
-// TIME
 void syncTime() {
   configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
   delay(1000);
@@ -576,7 +541,6 @@ String getDateOnly() {
   return String(datebuf);
 }
 
-// DAILY RESET
 void checkDailyReset() {
   struct tm timeinfo;
   if (!getLocalTime(&timeinfo)) return;
@@ -618,7 +582,6 @@ void checkDailyReset() {
   }
 }
 
-// PERSISTENCE
 void loadPersistentState() {
   detectionCount = preferences.getInt("count", 0);
   lastResetDate = preferences.getString("lastResetDate", "");
@@ -642,7 +605,6 @@ void savePersistentResetDate() {
   preferences.putString("lastResetDate", lastResetDate);
 }
 
-// SPIFFS
 void SPIFFSInit() {
   if (!SPIFFS.begin(true)) {
     Serial.println("SPIFFS initialization failed!");
@@ -653,7 +615,6 @@ void SPIFFSInit() {
   Serial.println("SPIFFS initialized");
 }
 
-// I2S INIT
 void i2sInit() {
     i2s_config_t i2s_config = {
         .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX),
@@ -683,7 +644,6 @@ void i2sInit() {
     Serial.println("INMP441 I2S microphone initialized");
 }
 
-// CALIBRATION FUNCTION
 void calibrateSensors() {
   Serial.println();
   Serial.println("=========================================");
@@ -725,7 +685,6 @@ void calibrateSensors() {
   Serial.println();
 }
 
-// *** ORIGINAL DRAFT DETECTION FUNCTION ***
 bool beamBroken() {
   bool mosquitoDetected = false;
   int detectedSensor = -1;
@@ -741,7 +700,6 @@ bool beamBroken() {
       if(dropPercent < 0) dropPercent = 0;
     }
     
-    // Check if beam is broken (value dropped below threshold)
     if(dropPercent >= DROP_THRESHOLD_PERCENT) {
       persistenceCount[i]++;
       if(persistenceCount[i] > 10) persistenceCount[i] = 10;
@@ -751,7 +709,6 @@ bool beamBroken() {
       }
     }
     
-    // If persistence reaches threshold, beam is confirmed broken
     if(persistenceCount[i] >= REQUIRED_PERSISTENCE) {
       mosquitoDetected = true;
       detectedSensor = i + 1;
@@ -774,7 +731,6 @@ bool beamBroken() {
   return mosquitoDetected;
 }
 
-// SERIAL STATUS DISPLAY
 void printSensorStatus() {
   Serial.print("[");
   Serial.print(getDateTime());
@@ -793,7 +749,6 @@ void printSensorStatus() {
     Serial.print(drop, 0);
     Serial.print("%)");
 
-    // Show persistence count if active
     if(persistenceCount[i] > 0) {
       Serial.print("[");
       Serial.print(persistenceCount[i]);
@@ -813,7 +768,6 @@ void printSensorStatus() {
   Serial.println();
 }
 
-// MAIN ACTION with recovery time and persistence reset
 void startRecordingAndUpload() {
   if (SPIFFS.exists(filename)) {
     SPIFFS.remove(filename);
@@ -833,7 +787,6 @@ void startRecordingAndUpload() {
   
   lastDetectionEndTime = millis();
   
-  // Reset persistence counters after detection
   for(int i = 0; i < NUM_SENSORS; i++) {
     persistenceCount[i] = 0;
   }
@@ -843,7 +796,6 @@ void startRecordingAndUpload() {
   Serial.println("ms cooldown)");
 }
 
-// RECORD AUDIO
 bool recordAudio() {
     File file = SPIFFS.open(filename, FILE_WRITE);
     if (!file) return false;
@@ -856,7 +808,6 @@ bool recordAudio() {
     
     Serial.println("Recording audio...");
     
-    // Flush DMA buffer
     for (int i = 0; i < 16; i++) {
         i2s_read(I2S_PORT, i2sData, I2S_READ_LEN, &bytesRead, portMAX_DELAY);
     }
@@ -864,7 +815,6 @@ bool recordAudio() {
     while (totalBytesWritten < WAV_DATA_SIZE) {
         i2s_read(I2S_PORT, i2sData, I2S_READ_LEN, &bytesRead, portMAX_DELAY);
         
-        // Apply gain
         for (size_t i = 0; i < bytesRead/2; i++) {
             int32_t amplified = (int32_t)i2sData[i] * 2;
             if (amplified > 32767) amplified = 32767;
@@ -887,7 +837,6 @@ bool recordAudio() {
     return true;
 }
 
-// UPLOAD TO SERVER
 bool uploadToServer() {
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("WiFi not connected");
@@ -925,7 +874,6 @@ bool uploadToServer() {
   }
 }
 
-// WAV HEADER
 void writeWavHeader(File &file, uint32_t dataSize) {
   uint8_t header[44] = {0};
 

@@ -13,21 +13,18 @@ from logging.handlers import RotatingFileHandler
 import signal
 import sys
 
-# Configuration - UPDATED WITH YOUR NEW PATH
+# UPDATED USING NEW PATH
 RECORDINGS_PATH = "/home/teasis/mosquito_listener/data/mosquito_recordings/"
 HOST = '0.0.0.0'
 PORT = 5000
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB max file size
 
-# Create Flask app
 app = Flask(__name__)
 
-# Setup logging
 def setup_logging():
     log_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
     log_file = '/home/teasis/mosquito_listener/receiver.log'
 
-    # Rotate log files (keep 5 backups, 1MB each)
     file_handler = RotatingFileHandler(log_file, maxBytes=1024*1024, backupCount=5)
     file_handler.setFormatter(log_formatter)
 
@@ -42,7 +39,6 @@ def setup_logging():
 
 logger = setup_logging()
 
-# Ensure recordings directory exists
 def ensure_directory():
     """Create the recordings directory if it doesn't exist"""
     if not os.path.exists(RECORDINGS_PATH):
@@ -60,33 +56,26 @@ def upload_audio():
     start_time = time.time()
 
     try:
-        # Check if file was sent
         if not request.data:
             logger.warning("No data received")
             return "No data received", 400
 
-        # Check file size
         content_length = request.content_length
         if content_length and content_length > MAX_FILE_SIZE:
             logger.warning(f"File too large: {content_length} bytes")
             return "File too large", 400
 
-        # Ensure directory exists before saving
         ensure_directory()
 
-        # Generate filename with timestamp
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"mosquito_{timestamp}.wav"
         filepath = os.path.join(RECORDINGS_PATH, filename)
 
-        # Save the audio data
         with open(filepath, 'wb') as f:
             f.write(request.data)
 
-        # Get file size for logging
         file_size = os.path.getsize(filepath)
 
-        # Calculate processing time
         process_time = (time.time() - start_time) * 1000  # in milliseconds
 
         logger.info(f"✓ Saved: {filename} ({file_size} bytes) in {process_time:.1f}ms")
@@ -108,7 +97,6 @@ def upload_audio():
 def health_check():
     """Simple health check endpoint"""
     try:
-        # Count recordings
         recording_count = 0
         if os.path.exists(RECORDINGS_PATH):
             recording_count = len([f for f in os.listdir(RECORDINGS_PATH) if f.endswith('.wav')])
@@ -141,7 +129,6 @@ def list_recordings():
                     "created": datetime.fromtimestamp(stat.st_ctime).isoformat()
                 })
 
-        # Sort by modified time, newest first
         files.sort(key=lambda x: x['modified'], reverse=True)
 
         return jsonify({
@@ -178,18 +165,14 @@ def signal_handler(sig, frame):
     sys.exit(0)
 
 if __name__ == '__main__':
-    # Register signal handler
     signal.signal(signal.SIGINT, signal_handler)
 
-    # Ensure directory exists
     ensure_directory()
 
-    # Print startup banner
     logger.info("="*60)
     logger.info("Audio Receiver Started")
     logger.info(f"Host: {HOST}:{PORT}")
     logger.info(f"Saving to: {RECORDINGS_PATH}")
     logger.info("="*60)
 
-    # Run Flask app
     app.run(host=HOST, port=PORT, debug=False, threaded=True)

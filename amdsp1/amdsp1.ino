@@ -9,8 +9,8 @@
 #include <ArduinoJson.h>
 #include <algorithm> 
 
-const char* ssid = "KAYA AGRI, POULTRY & PET SUPPLY";
-const char* password = "SuperB@ngadF3ynManK@ya";
+const char* ssid = "WIFI SSID";
+const char* password = "PASSWORD";
 const char* serverName = "http://192.168.5.200:5000/upload_audio";
 
 const char* mqttServer = "192.168.5.200";

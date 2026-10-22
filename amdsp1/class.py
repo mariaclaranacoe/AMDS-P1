@@ -1,29 +1,3 @@
-============================================================
-MOSQUITO GENDER CLASSIFIER
-Classification-only mode
-Official total count is handled by ESP32 break-beam sensors via MQTT
-============================================================
-Model: cnn_model_min_val_round10.h5
-Preprocessing: 8000 Hz, 300 ms windows, 150 ms hop
-Confidence threshold: 0.60 (below this = ERROR)
-Period boundary: daily at 07:00 AM
-Files are assigned to periods using RECORDING TIME, not processing time
-------------------------------------------------------------
-✅ Connected to InfluxDB at 192.168.5.200:8086
-✅ InfluxDB enabled - data will be sent to database
-------------------------------------------------------------
-Current period: 2026-05-11 07:00:00 -> 2026-05-12 07:00:00
-Using model: cnn_model_min_val_round10.h5
-Model input shape: (None, 2400, 1)
-Model output shape: (None, 8)
-No audio files found.
-  📤 Sent cumulative stats to InfluxDB
-InfluxDB connection closed
-(mosquito_ai) teasis@IOTserver:~/mosquito_listener $ ls
-audio_receiver.py       cron.log               inspect_model.py  mosquito_ai   receiver.log.1
-classification_results  data                   map_classes.py    __pycache__   reset_stats.py
-class.py                gender_24h_stats.json  models            receiver.log  visualize_windows.py
-(mosquito_ai) teasis@IOTserver:~/mosquito_listener $ cat class.py
 #!/usr/bin/env python3
 """
 Mosquito gender classifier
@@ -61,19 +35,12 @@ except ImportError:
     print("TensorFlow not available")
     raise SystemExit(1)
 
-# ============================================
-# INFLUXDB IMPORTS
-# ============================================
 try:
     from influxdb import InfluxDBClient
     INFLUXDB_AVAILABLE = True
 except ImportError:
     print("InfluxDB client not available. Install with: pip install influxdb")
     INFLUXDB_AVAILABLE = False
-
-# ============================================
-# CONFIGURATION
-# ============================================
 
 BASE_DIR = "/home/teasis/mosquito_listener"
 MODEL_DIR = os.path.join(BASE_DIR, "models")
@@ -84,16 +51,12 @@ STATS_DIR = os.path.join(RESULTS_DIR, "daily_gender_stats")
 
 MODEL_NAME = "cnn_model_min_val_round10.h5"
 
-# Backward-compatible "current stats" file
 GENDER_COUNT_FILE = os.path.join(BASE_DIR, "gender_24h_stats.json")
 RESULTS_CSV = os.path.join(RESULTS_DIR, "classification_log.csv")
 
 RESET_HOUR = 7
 RESET_MINUTE = 0
 
-# ============================================
-# INFLUXDB CONFIGURATION
-# ============================================
 INFLUXDB_HOST = "192.168.5.200"
 INFLUXDB_PORT = 8086
 INFLUXDB_DATABASE = "mosquito_db"
@@ -104,26 +67,18 @@ os.makedirs(PROCESSED_DIR, exist_ok=True)
 os.makedirs(RESULTS_DIR, exist_ok=True)
 os.makedirs(STATS_DIR, exist_ok=True)
 
-# ============================================
-# MODEL + PREPROCESSING SETTINGS
-# ============================================
-
 TARGET_SR = 8000
 WINDOW_MS = 300
 HOP_MS = 150
 
-WINDOW_SAMPLES = int(TARGET_SR * WINDOW_MS / 1000)   # 2400
-HOP_SAMPLES = int(TARGET_SR * HOP_MS / 1000)         # 1200
+WINDOW_SAMPLES = int(TARGET_SR * WINDOW_MS / 1000)   
+HOP_SAMPLES = int(TARGET_SR * HOP_MS / 1000)         
 
 FEMALE_CLASSES = [0, 2, 4, 6]
 MALE_CLASSES   = [1, 3, 5, 7]
 
-# Low-confidence results become ERROR
 CONFIDENCE_THRESHOLD = 0.60
 
-# ============================================
-# INFLUXDB INITIALIZATION
-# ============================================
 
 def init_influxdb():
     """Initialize InfluxDB client"""
@@ -155,9 +110,6 @@ def init_influxdb():
         print("⚠️ Data will be saved locally only")
         return None
 
-# ============================================
-# PERIOD / TIME HELPERS
-# ============================================
 
 def get_period_start(dt):
     """
@@ -264,9 +216,6 @@ def extract_recorded_datetime(audio_path):
     except Exception:
         return datetime.now()
 
-# ============================================
-# INFLUXDB FUNCTIONS
-# ============================================
 
 def send_to_influxdb(client, measurement, fields, tags=None, timestamp=None):
     """Send data to InfluxDB"""
@@ -359,9 +308,6 @@ def send_gender_stats(client, stats, stat_type="cumulative"):
         else:
             print("  📤 Sent cumulative stats to InfluxDB")
 
-# ============================================
-# LOCAL FILE HELPERS
-# ============================================
 
 def ensure_csv_exists():
     if not os.path.exists(RESULTS_CSV):
@@ -467,9 +413,6 @@ def save_result_json(filename, gender, confidence, predicted_class,
     except Exception as e:
         print(f"Warning: could not save result JSON for {filename}: {e}")
 
-# ============================================
-# AUDIO PREPROCESSING
-# ============================================
 
 def preprocess_audio_windows(audio_path):
     try:
@@ -506,9 +449,6 @@ def preprocess_audio_windows(audio_path):
         print(f"Error preprocessing {audio_path}: {e}")
         return None
 
-# ============================================
-# CLASSIFICATION
-# ============================================
 
 def classify_with_model(audio_path, model):
     try:
@@ -540,9 +480,6 @@ def classify_with_model(audio_path, model):
         print(f"Classification error for {audio_path}: {e}")
         return "ERROR", None, 0, None
 
-# ============================================
-# PERIOD FINALIZATION
-# ============================================
 
 def finalize_previous_period_if_needed(influx_client, current_period_start):
     """
@@ -570,10 +507,6 @@ def finalize_previous_period_if_needed(influx_client, current_period_start):
 
     previous_stats["summary_sent"] = True
     save_period_stats(previous_stats)
-
-# ============================================
-# MAIN
-# ============================================
 
 def main():
     print("\n" + "=" * 60)
